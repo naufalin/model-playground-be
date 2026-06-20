@@ -6,7 +6,7 @@ from collections.abc import AsyncGenerator
 import httpx
 
 import playground.ids as ids
-from playground.config import settings
+from playground.config import get_settings
 
 
 class AgentRuntimeClient:
@@ -17,7 +17,7 @@ class AgentRuntimeClient:
     """
 
     def __init__(self, base_url: str | None = None) -> None:
-        self._base_url = (base_url or settings.agent_runtime_url).rstrip("/")
+        self._base_url = (base_url or get_settings().agent_runtime_url).rstrip("/")
         self._client: httpx.AsyncClient | None = None
 
     # -- lifecycle -----------------------------------------------------------

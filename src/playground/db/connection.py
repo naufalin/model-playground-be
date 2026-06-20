@@ -19,7 +19,10 @@ class Database:
         # Auto-fix: ensure async driver prefix for PostgreSQL
         if url.startswith("postgresql://"):
             url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
-        self.engine = create_async_engine(url, pool_size=10, max_overflow=20)
+        engine_kwargs = {}
+        if url.startswith("postgresql+asyncpg://"):
+            engine_kwargs = {"pool_size": 10, "max_overflow": 20}
+        self.engine = create_async_engine(url, **engine_kwargs)
 
     async def disconnect(self) -> None:
         """Dispose of the engine and all connections."""

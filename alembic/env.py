@@ -7,7 +7,7 @@ from alembic import context
 from sqlalchemy import pool
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from playground.config import settings
+from playground.config import get_settings
 from playground.db.models import Base
 
 config = context.config
@@ -16,6 +16,7 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 target_metadata = Base.metadata
+settings = get_settings()
 
 
 def run_migrations_offline() -> None:

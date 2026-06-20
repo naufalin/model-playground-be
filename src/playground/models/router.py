@@ -1,24 +1,13 @@
 """GET /models — list active LLM models."""
 
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel
 
 import playground.ids as ids
 from playground.db.repos.model_repo import ModelRepo
 from playground.deps import get_model_repo
+from playground.models.schemas import ModelOut, ModelsResponse
 
 router = APIRouter(tags=["models"])
-
-
-class ModelOut(BaseModel):
-    id: str
-    provider: str
-    model_name: str
-    display_name: str
-
-
-class ModelsResponse(BaseModel):
-    models: list[ModelOut]
 
 
 @router.get("/models", response_model=ModelsResponse)

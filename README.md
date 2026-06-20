@@ -55,7 +55,7 @@ src/playground/
 ├── auth/              # JWT auth (signup, login, me)
 ├── db/                # SQLAlchemy models + repos
 ├── models/            # GET /models endpoint
-├── playground/        # CRUD + chat + fanout streaming
+├── sessions/          # CRUD + chat service + fanout streaming
 └── runtime/           # Agent runtime HTTP client
 ```
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class PlaygroundCreate(BaseModel):
@@ -14,8 +14,7 @@ class PlaygroundOut(BaseModel):
     title: str
     created_at: datetime | None = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class PlaygroundListOut(BaseModel):
@@ -30,8 +29,7 @@ class MessageOut(BaseModel):
     latency_ms: int | None = None
     created_at: datetime | None = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class ThreadOut(BaseModel):
@@ -39,20 +37,18 @@ class ThreadOut(BaseModel):
     provider: str
     model_name: str
     display_name: str
-    messages: list[MessageOut] = []
+    messages: list[MessageOut] = Field(default_factory=list)
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class PlaygroundDetail(BaseModel):
     id: str
     title: str
     created_at: datetime | None = None
-    threads: list[ThreadOut] = []
+    threads: list[ThreadOut] = Field(default_factory=list)
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class ModelSelect(BaseModel):
