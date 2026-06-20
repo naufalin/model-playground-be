@@ -1,0 +1,56 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/playground"]
+
+[project]
+name = "model-playground-be"
+version = "0.1.0"
+description = "LLM Playground — test multiple models side-by-side"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.34.0",
+    "sqlalchemy[asyncio]>=2.0.36",
+    "asyncpg>=0.30.0",
+    "alembic>=1.14.0",
+    "pydantic[email]>=2.10.0",
+    "pydantic-settings>=2.6.0",
+    "python-jose[cryptography]>=3.3.0",
+    "python-multipart>=0.0.20",
+    "pwdlib[argon2]>=0.2.0",
+    "httpx>=0.28.0",
+    "python-dotenv>=1.0.0",
+    "sqids>=0.5.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+    "aiosqlite>=0.20.0",
+    "ruff>=0.8.0",
+]
+
+[project.scripts]
+playground = "main:main"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP", "B", "SIM", "ASYNC"]
+
+[tool.ruff.lint.per-file-ignores]
+"src/playground/auth/router.py" = ["B008"]
+"src/playground/auth/deps.py" = ["B008"]
+"src/playground/models/router.py" = ["B008"]
+"src/playground/playground/router.py" = ["B008"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
