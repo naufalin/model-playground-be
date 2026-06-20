@@ -94,6 +94,28 @@ async def test_service_rejects_playground_owned_by_another_user(db: Database) ->
         await service.get_playground(encode(playground.id), other.id)
 
 
+async def test_service_updates_playground_title_for_owner(db: Database) -> None:
+    user = await create_user(db)
+    playground = await create_session(db, user.id)
+    service = PlaygroundService(db, FakeRuntime())
+
+    updated = await service.update_playground(encode(playground.id), user.id, "Renamed")
+    detail = await service.get_playground(encode(playground.id), user.id)
+
+    assert updated.title == "Renamed"
+    assert detail.title == "Renamed"
+
+
+async def test_service_rejects_title_update_for_another_user(db: Database) -> None:
+    owner = await create_user(db, "owner@example.com")
+    other = await create_user(db, "other@example.com")
+    playground = await create_session(db, owner.id)
+    service = PlaygroundService(db, FakeRuntime())
+
+    with pytest.raises(PlaygroundNotFoundError):
+        await service.update_playground(encode(playground.id), other.id, "Nope")
+
+
 async def test_multi_chat_creates_threads_only_for_valid_models(db: Database) -> None:
     user = await create_user(db)
     model = await create_model(db)

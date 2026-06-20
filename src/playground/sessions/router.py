@@ -15,6 +15,7 @@ from playground.sessions.schemas import (
     PlaygroundDetail,
     PlaygroundListOut,
     PlaygroundOut,
+    PlaygroundUpdate,
 )
 from playground.sessions.service import PlaygroundError, PlaygroundService
 
@@ -65,6 +66,19 @@ async def get_playground(
 ) -> PlaygroundDetail:
     try:
         return await service.get_playground(encoded_id, user.id)
+    except PlaygroundError as exc:
+        _raise_http_error(exc)
+
+
+@router.patch("/{encoded_id}", response_model=PlaygroundOut)
+async def update_playground(
+    encoded_id: str,
+    body: PlaygroundUpdate,
+    user: User = Depends(get_current_user),
+    service: PlaygroundService = Depends(get_playground_service),
+) -> PlaygroundOut:
+    try:
+        return await service.update_playground(encoded_id, user.id, body.title)
     except PlaygroundError as exc:
         _raise_http_error(exc)
 

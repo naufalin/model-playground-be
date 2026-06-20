@@ -6,7 +6,11 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class PlaygroundCreate(BaseModel):
-    title: str = "New Playground"
+    title: str = Field(default="New Playground", min_length=1, max_length=255)
+
+
+class PlaygroundUpdate(BaseModel):
+    title: str = Field(min_length=1, max_length=255)
 
 
 class PlaygroundOut(BaseModel):

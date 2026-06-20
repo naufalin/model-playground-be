@@ -66,6 +66,26 @@ class SessionRepo:
             )
             return result.scalar_one_or_none()
 
+    async def update_title(
+        self,
+        session_id: int,
+        user_id: int,
+        title: str,
+    ) -> PlaygroundSession | None:
+        async with self._session() as s:
+            result = await s.execute(
+                select(PlaygroundSession).where(
+                    PlaygroundSession.id == session_id,
+                    PlaygroundSession.user_id == user_id,
+                )
+            )
+            sess = result.scalar_one_or_none()
+            if sess is None:
+                return None
+            sess.title = title
+            await s.flush()
+            return sess
+
     async def delete(self, session_id: int) -> None:
         async with self._session() as s:
             sess = await s.get(PlaygroundSession, session_id)

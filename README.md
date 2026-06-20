@@ -40,6 +40,7 @@ uv run uvicorn playground.app:app --reload --port 8080
 | POST | `/playground` | Create session |
 | GET | `/playground` | List sessions |
 | GET | `/playground/{id}` | Session detail + threads |
+| PATCH | `/playground/{id}` | Rename session |
 | DELETE | `/playground/{id}` | Delete session |
 | POST | `/playground/{id}/chat` | Fan-out to N models (SSE) |
 | POST | `/playground/{id}/chat/{thread_id}` | Continue single thread (SSE) |

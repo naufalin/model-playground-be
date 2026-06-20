@@ -113,6 +113,19 @@ class PlaygroundService:
                 threads=thread_outs,
             )
 
+    async def update_playground(self, encoded_id: str, user_id: int, title: str) -> PlaygroundOut:
+        session_id = _decode_id(encoded_id, "Playground not found")
+        async with self.db.session() as session:
+            session_repo = SessionRepo(session)
+            playground = await session_repo.update_title(session_id, user_id, title)
+            if playground is None:
+                raise PlaygroundNotFoundError("Playground not found")
+            return PlaygroundOut(
+                id=encode(playground.id),
+                title=playground.title,
+                created_at=playground.created_at,
+            )
+
     async def delete_playground(self, encoded_id: str, user_id: int) -> None:
         session_id = _decode_id(encoded_id, "Playground not found")
         async with self.db.session() as session:
