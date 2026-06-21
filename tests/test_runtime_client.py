@@ -101,3 +101,40 @@ async def test_runtime_client_lists_models(monkeypatch) -> None:
 
     assert payload["default_provider"] == "openrouter"
     assert payload["openrouter"]["models"][0]["model_id"] == "vendor/model"
+
+
+async def test_runtime_client_creates_model(monkeypatch) -> None:
+    monkeypatch.setenv("SECRET_KEY", "test")
+    get_settings.cache_clear()
+
+    seen_payload = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/models"
+        seen_payload.update(json.loads(request.content))
+        return httpx.Response(201, json={"id": 10, **seen_payload})
+
+    runtime = _runtime_with_transport(handler)
+    try:
+        payload = await runtime.create_model(
+            provider="openrouter",
+            model_id="vendor/new",
+            name="Vendor New",
+            enabled=True,
+            supports_reasoning=False,
+            sort_order=80,
+            config={"tier": "test"},
+        )
+    finally:
+        await runtime.close()
+
+    assert seen_payload == {
+        "provider": "openrouter",
+        "model_id": "vendor/new",
+        "name": "Vendor New",
+        "enabled": True,
+        "supports_reasoning": False,
+        "sort_order": 80,
+        "config": {"tier": "test"},
+    }
+    assert payload["id"] == 10

@@ -174,6 +174,26 @@ async def test_multi_chat_creates_threads_only_for_valid_models(db: Database) ->
         )
 
 
+async def test_multi_chat_rejects_inactive_models(db: Database) -> None:
+    user = await create_user(db)
+    model = await create_model(db)
+    playground = await create_session(db, user.id)
+    async with db.session() as session:
+        stored = await session.get(LlmModel, model.id)
+        assert stored is not None
+        stored.is_active = False
+
+    service = PlaygroundService(db, FakeRuntime())
+
+    with pytest.raises(ModelNotFoundError):
+        await service.stream_multi_chat(
+            encode(playground.id),
+            user.id,
+            "hello",
+            [(model.provider, model.model_name, None)],
+        )
+
+
 async def test_multi_chat_persists_user_and_assistant_messages(db: Database) -> None:
     user = await create_user(db)
     model = await create_model(db)

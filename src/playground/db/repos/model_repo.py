@@ -4,7 +4,7 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from playground.db.connection import Database
@@ -44,15 +44,22 @@ class ModelRepo:
             )
             return list(result.scalars().all())
 
-    async def get_by_provider_model(self, provider: str, model_name: str) -> LlmModel | None:
+    async def get_by_provider_model(
+        self,
+        provider: str,
+        model_name: str,
+        *,
+        active_only: bool = True,
+    ) -> LlmModel | None:
         """Look up a model by its provider + model_name pair."""
         async with self._session() as s:
-            result = await s.execute(
-                select(LlmModel).where(
-                    LlmModel.provider == provider,
-                    LlmModel.model_name == model_name,
-                )
+            stmt = select(LlmModel).where(
+                LlmModel.provider == provider,
+                LlmModel.model_name == model_name,
             )
+            if active_only:
+                stmt = stmt.where(LlmModel.is_active.is_(True))
+            result = await s.execute(stmt)
             return result.scalar_one_or_none()
 
     async def get_by_id(self, model_id: int) -> LlmModel | None:
@@ -102,3 +109,27 @@ class ModelRepo:
             model.config_json = config_json
             await s.flush()
             return model
+
+    async def deactivate_missing_runtime_models(
+        self,
+        seen_models: set[tuple[str, str]],
+    ) -> int:
+        """Deactivate local models that are no longer present in the runtime registry."""
+        async with self._session() as s:
+            active_models = await s.execute(
+                select(LlmModel).where(LlmModel.is_active.is_(True))
+            )
+            missing_ids = [
+                model.id
+                for model in active_models.scalars()
+                if (model.provider, model.model_name) not in seen_models
+            ]
+            if not missing_ids:
+                return 0
+            result = await s.execute(
+                update(LlmModel)
+                .where(LlmModel.id.in_(missing_ids))
+                .values(is_active=False)
+            )
+            await s.flush()
+            return result.rowcount or 0

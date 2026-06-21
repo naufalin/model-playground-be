@@ -59,6 +59,31 @@ class AgentRuntimeClient:
         resp.raise_for_status()
         return resp.json()
 
+    async def create_model(
+        self,
+        *,
+        provider: str,
+        model_id: str,
+        name: str,
+        enabled: bool = True,
+        supports_reasoning: bool = False,
+        sort_order: int = 0,
+        config: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Create a runtime model and return the created model payload."""
+        payload: dict[str, Any] = {
+            "provider": provider,
+            "model_id": model_id,
+            "name": name,
+            "enabled": enabled,
+            "supports_reasoning": supports_reasoning,
+            "sort_order": sort_order,
+            "config": config,
+        }
+        resp = await self.client.post("/models", json=payload)
+        resp.raise_for_status()
+        return resp.json()
+
     async def create_session(self, title: str = "New Session") -> str:
         """Create a new runtime session and return its encoded ID."""
         resp = await self.client.post(
