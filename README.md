@@ -7,7 +7,7 @@ Test multiple LLMs side-by-side. Send one prompt, get responses from N models in
 - **FastAPI** — async Python web framework
 - **SQLAlchemy** + **PostgreSQL** — async ORM with integer PKs + sqids encoding
 - **httpx** — async HTTP client to the agent runtime service
-- **JWT** — stateless auth (python-jose + passlib/bcrypt)
+- **JWT** — stateless auth (python-jose + pwdlib/Argon2)
 
 ## Quick Start
 
@@ -17,7 +17,7 @@ uv sync
 
 # 2. Copy env and fill in values
 cp .env.example .env
-# Edit .env: set SECRET_KEY, DATABASE_URL
+# Edit .env: set SECRET_KEY, DATABASE_URL, AGENT_RUNTIME_URL, AGENT_RUNTIME_BEARER_TOKEN
 
 # 3. Create database
 createdb playground
@@ -37,13 +37,14 @@ uv run uvicorn playground.app:app --reload --port 8080
 | POST | `/auth/login` | Login → JWT |
 | GET | `/auth/me` | Current user |
 | GET | `/models` | List available LLMs |
+| POST | `/models/sync` | Sync model metadata from the agent runtime |
 | POST | `/playground` | Create session |
 | GET | `/playground` | List sessions |
 | GET | `/playground/{id}` | Session detail + threads |
 | PATCH | `/playground/{id}` | Rename session |
 | DELETE | `/playground/{id}` | Delete session |
-| POST | `/playground/{id}/chat` | Fan-out to N models (SSE) |
-| POST | `/playground/{id}/chat/{thread_id}` | Continue single thread (SSE) |
+| POST | `/playground/{id}/chat` | Fan-out to N models with reasoning/perf/tool metadata (SSE) |
+| POST | `/playground/{id}/chat/{thread_id}` | Continue single thread with enriched SSE |
 
 ## Project Structure
 

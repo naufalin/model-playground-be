@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -31,6 +32,16 @@ class MessageOut(BaseModel):
     role: str
     content: str
     latency_ms: int | None = None
+    provider: str | None = None
+    model: str | None = None
+    usage: dict[str, Any] | None = None
+    thinking: dict[str, Any] | None = None
+    tool_name: str | None = None
+    tool_call_id: str | None = None
+    tool_input: dict[str, Any] | None = None
+    output_preview: str | None = None
+    output_delta_count: int | None = None
+    request_options: dict[str, Any] | None = None
     created_at: datetime | None = None
 
     model_config = ConfigDict(from_attributes=True)
@@ -58,6 +69,7 @@ class PlaygroundDetail(BaseModel):
 class ModelSelect(BaseModel):
     provider: str
     model_name: str
+    reasoning_effort: str | None = None
 
 
 class ChatRequest(BaseModel):

@@ -2,6 +2,7 @@
 
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -28,8 +29,19 @@ class ModelRepo:
             stmt = select(LlmModel).where(LlmModel.is_active == True)  # noqa: E712
             if provider:
                 stmt = stmt.where(LlmModel.provider == provider)
-            stmt = stmt.order_by(LlmModel.provider, LlmModel.display_name)
+            stmt = stmt.order_by(LlmModel.provider, LlmModel.sort_order, LlmModel.display_name)
             result = await s.execute(stmt)
+            return list(result.scalars().all())
+
+    async def list_all(self) -> list[LlmModel]:
+        async with self._session() as s:
+            result = await s.execute(
+                select(LlmModel).order_by(
+                    LlmModel.provider,
+                    LlmModel.sort_order,
+                    LlmModel.display_name,
+                )
+            )
             return list(result.scalars().all())
 
     async def get_by_provider_model(self, provider: str, model_name: str) -> LlmModel | None:
@@ -53,3 +65,40 @@ class ModelRepo:
             model = await s.get(LlmModel, model_id)
             if model:
                 model.is_active = is_active
+
+    async def upsert_runtime_model(
+        self,
+        *,
+        runtime_model_id: int | None,
+        provider: str,
+        model_name: str,
+        display_name: str,
+        is_active: bool,
+        supports_reasoning: bool,
+        sort_order: int,
+        config_json: dict[str, Any] | None,
+    ) -> LlmModel:
+        async with self._session() as s:
+            result = await s.execute(
+                select(LlmModel).where(
+                    LlmModel.provider == provider,
+                    LlmModel.model_name == model_name,
+                )
+            )
+            model = result.scalar_one_or_none()
+            if model is None:
+                model = LlmModel(
+                    provider=provider,
+                    model_name=model_name,
+                    display_name=display_name,
+                )
+                s.add(model)
+
+            model.runtime_model_id = runtime_model_id
+            model.display_name = display_name
+            model.is_active = is_active
+            model.supports_reasoning = supports_reasoning
+            model.sort_order = sort_order
+            model.config_json = config_json
+            await s.flush()
+            return model

@@ -2,10 +2,10 @@
 
 import json
 from collections.abc import AsyncGenerator
+from typing import Any
 
 import httpx
 
-import playground.ids as ids
 from playground.config import get_settings
 
 
@@ -17,7 +17,9 @@ class AgentRuntimeClient:
     """
 
     def __init__(self, base_url: str | None = None) -> None:
-        self._base_url = (base_url or get_settings().agent_runtime_url).rstrip("/")
+        settings = get_settings()
+        self._base_url = (base_url or settings.agent_runtime_url).rstrip("/")
+        self._bearer_token = settings.agent_runtime_bearer_token.strip()
         self._client: httpx.AsyncClient | None = None
 
     # -- lifecycle -----------------------------------------------------------
@@ -28,8 +30,15 @@ class AgentRuntimeClient:
             self._client = httpx.AsyncClient(
                 base_url=self._base_url,
                 timeout=httpx.Timeout(300),
+                headers=self._headers,
             )
         return self._client
+
+    @property
+    def _headers(self) -> dict[str, str]:
+        if not self._bearer_token:
+            return {}
+        return {"Authorization": f"Bearer {self._bearer_token}"}
 
     async def close(self) -> None:
         if self._client is not None:
@@ -44,28 +53,47 @@ class AgentRuntimeClient:
 
     # -- public API ----------------------------------------------------------
 
-    async def create_session(self, provider: str, model_name: str) -> str:
+    async def list_models(self) -> dict[str, Any]:
+        """Return the runtime model registry payload."""
+        resp = await self.client.get("/models")
+        resp.raise_for_status()
+        return resp.json()
+
+    async def create_session(self, title: str = "New Session") -> str:
         """Create a new runtime session and return its encoded ID."""
         resp = await self.client.post(
             "/sessions",
-            json={"provider": provider, "model_name": model_name},
+            json={"title": title},
         )
         resp.raise_for_status()
         data = resp.json()
-        return ids.encode(data["session_id"])
+        return data["id"]
 
     async def chat_stream(
-        self, session_id: str, message: str
+        self,
+        session_id: str,
+        message: str,
+        *,
+        provider: str | None = None,
+        model: str | None = None,
+        reasoning_effort: str | None = None,
     ) -> AsyncGenerator[dict, None]:
         """Stream SSE events from a chat completion request.
 
         Yields parsed JSON objects from each ``data:`` line.
         """
         url = f"/sessions/{session_id}/chat/stream"
+        payload: dict[str, Any] = {"message": message}
+        if provider is not None:
+            payload["provider"] = provider
+        if model is not None:
+            payload["model"] = model
+        if reasoning_effort is not None:
+            payload["reasoning_effort"] = reasoning_effort
         async with self.client.stream(
             "POST",
             url,
-            json={"message": message},
+            json=payload,
             headers={"Accept": "text/event-stream"},
         ) as resp:
             resp.raise_for_status()

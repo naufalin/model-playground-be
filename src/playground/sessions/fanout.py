@@ -12,33 +12,51 @@ from playground.runtime.client import AgentRuntimeClient
 
 async def fanout_chat(
     runtime: AgentRuntimeClient,
-    threads: list[ModelThread],
+    threads: list[tuple[ModelThread, str | None]],
     user_message: str,
 ) -> AsyncGenerator[str, None]:
     """Merge N per-thread streaming responses into a single SSE stream."""
     queue: asyncio.Queue[str] = asyncio.Queue()
 
-    async def _pump(thread: ModelThread) -> None:
+    async def _pump(thread: ModelThread, reasoning_effort: str | None) -> None:
         thread_id = encode(thread.id)
         try:
             await queue.put(json.dumps({"type": "thread_start", "thread_id": thread_id}))
 
             full_text = ""
             start = time.monotonic()
-            async for event in runtime.chat_stream(thread.runtime_session_id, user_message):
+            done_event: dict | None = None
+            async for event in runtime.chat_stream(
+                thread.runtime_session_id,
+                user_message,
+                provider=thread.provider,
+                model=thread.model_name,
+                reasoning_effort=reasoning_effort,
+            ):
+                if event.get("type") == "done":
+                    done_event = event
+                    continue
                 event["thread_id"] = thread_id
                 await queue.put(json.dumps(event))
                 if event.get("type") == "text_delta":
                     full_text += event.get("delta", "")
 
             latency_ms = int((time.monotonic() - start) * 1000)
+            content = full_text
+            if done_event:
+                content = done_event.get("content") or full_text
             await queue.put(
                 json.dumps(
                     {
                         "type": "thread_done",
                         "thread_id": thread_id,
                         "latency_ms": latency_ms,
-                        "content": full_text,
+                        "content": content,
+                        "provider": (done_event or {}).get("provider") or thread.provider,
+                        "model": (done_event or {}).get("model") or thread.model_name,
+                        "usage": (done_event or {}).get("usage"),
+                        "thinking": (done_event or {}).get("thinking"),
+                        "output_delta_count": (done_event or {}).get("output_delta_count"),
                     }
                 )
             )
@@ -53,7 +71,10 @@ async def fanout_chat(
                 )
             )
 
-    tasks = [asyncio.create_task(_pump(t)) for t in threads]
+    tasks = [
+        asyncio.create_task(_pump(thread, reasoning_effort))
+        for thread, reasoning_effort in threads
+    ]
     remaining = len(tasks)
 
     while remaining > 0:

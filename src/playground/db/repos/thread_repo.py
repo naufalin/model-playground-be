@@ -83,6 +83,16 @@ class ThreadRepo:
         role: str,
         content: str,
         latency_ms: int | None = None,
+        tool_name: str | None = None,
+        tool_call_id: str | None = None,
+        tool_input: dict | None = None,
+        output_preview: str | None = None,
+        provider: str | None = None,
+        model: str | None = None,
+        usage_json: dict | None = None,
+        thinking_json: dict | None = None,
+        request_options_json: dict | None = None,
+        output_delta_count: int | None = None,
     ) -> Message:
         async with self._session() as s:
             msg = Message(
@@ -90,6 +100,16 @@ class ThreadRepo:
                 role=role,
                 content=content,
                 latency_ms=latency_ms,
+                tool_name=tool_name,
+                tool_call_id=tool_call_id,
+                tool_input=tool_input,
+                output_preview=output_preview,
+                provider=provider,
+                model=model,
+                usage_json=usage_json,
+                thinking_json=thinking_json,
+                request_options_json=request_options_json,
+                output_delta_count=output_delta_count,
             )
             s.add(msg)
             await s.flush()

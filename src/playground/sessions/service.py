@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import AsyncGenerator
+from typing import Any
 
 from playground.db.connection import Database
 from playground.db.models import ModelThread
@@ -19,6 +20,8 @@ from playground.sessions.schemas import (
     PlaygroundOut,
     ThreadOut,
 )
+
+ModelSelection = tuple[str, str, str | None]
 
 
 class PlaygroundError(Exception):
@@ -92,6 +95,16 @@ class PlaygroundService:
                         role=message.role,
                         content=message.content,
                         latency_ms=message.latency_ms,
+                        provider=message.provider,
+                        model=message.model,
+                        usage=message.usage_json,
+                        thinking=message.thinking_json,
+                        tool_name=message.tool_name,
+                        tool_call_id=message.tool_call_id,
+                        tool_input=message.tool_input,
+                        output_preview=message.output_preview,
+                        output_delta_count=message.output_delta_count,
+                        request_options=message.request_options_json,
                         created_at=message.created_at,
                     )
                     for message in thread.messages
@@ -140,14 +153,19 @@ class PlaygroundService:
         encoded_id: str,
         user_id: int,
         message: str,
-        models: list[tuple[str, str]],
+        models: list[ModelSelection],
     ) -> AsyncGenerator[str, None]:
         session_id = _decode_id(encoded_id, "Playground not found")
         threads = await self._prepare_multi_chat(session_id, user_id, message, models)
 
         async def _stream() -> AsyncGenerator[str, None]:
-            thread_texts: dict[int, str] = {thread.id: "" for thread in threads}
-            thread_latencies: dict[int, int] = {}
+            thread_texts: dict[int, str] = {thread.id: "" for thread, _ in threads}
+            thread_done: dict[int, dict[str, Any]] = {}
+            tool_events: dict[int, list[dict[str, Any]]] = {thread.id: [] for thread, _ in threads}
+            request_options = {
+                thread.id: _request_options(thread.provider, thread.model_name, reasoning_effort)
+                for thread, reasoning_effort in threads
+            }
 
             async for chunk in fanout_chat(self.runtime, threads, message):
                 try:
@@ -158,21 +176,45 @@ class PlaygroundService:
                         thread_texts[tid] += data.get("delta", "")
                     if tid_encoded and data.get("type") == "thread_done":
                         tid = decode(tid_encoded)
-                        thread_latencies[tid] = data.get("latency_ms", 0)
+                        thread_done[tid] = data
+                    if tid_encoded and data.get("type") in {"tool_start", "tool_end"}:
+                        tid = decode(tid_encoded)
+                        tool_events.setdefault(tid, []).append(data)
                 except (json.JSONDecodeError, ValueError):
                     pass
                 yield chunk
 
             async with self.db.session() as session:
                 thread_repo = ThreadRepo(session)
-                for thread in threads:
+                for thread, _reasoning_effort in threads:
+                    for event in tool_events.get(thread.id, []):
+                        tool_name = event.get("tool") or "tool"
+                        is_start = event.get("type") == "tool_start"
+                        await thread_repo.add_message(
+                            thread.id,
+                            role="tool",
+                            content=f"[{'calling' if is_start else 'finished'} {tool_name}]",
+                            tool_name=tool_name,
+                            tool_call_id=event.get("call_id"),
+                            tool_input=event.get("args") if is_start else None,
+                            output_preview=f"{event.get('type')}:{tool_name}",
+                        )
+
+                    done = thread_done.get(thread.id, {})
                     content = thread_texts.get(thread.id, "")
+                    content = done.get("content") or content
                     if content:
                         await thread_repo.add_message(
                             thread.id,
                             role="assistant",
                             content=content,
-                            latency_ms=thread_latencies.get(thread.id),
+                            latency_ms=done.get("latency_ms"),
+                            provider=done.get("provider"),
+                            model=done.get("model"),
+                            usage_json=done.get("usage"),
+                            thinking_json=done.get("thinking"),
+                            request_options_json=request_options.get(thread.id),
+                            output_delta_count=done.get("output_delta_count"),
                         )
 
         return _stream()
@@ -193,11 +235,24 @@ class PlaygroundService:
             full_text = ""
             latency_ms = 0
             start = time.monotonic()
+            done_event: dict[str, Any] | None = None
+            tool_events: list[dict[str, Any]] = []
+            request_options = _request_options(thread.provider, thread.model_name, None)
             try:
-                async for event in self.runtime.chat_stream(thread.runtime_session_id, message):
+                async for event in self.runtime.chat_stream(
+                    thread.runtime_session_id,
+                    message,
+                    provider=thread.provider,
+                    model=thread.model_name,
+                ):
+                    if event.get("type") == "done":
+                        done_event = event
+                        continue
                     event["thread_id"] = thread_id_enc
                     if event.get("type") == "text_delta":
                         full_text += event.get("delta", "")
+                    if event.get("type") in {"tool_start", "tool_end"}:
+                        tool_events.append(event)
                     yield f"data: {json.dumps(event)}\n\n"
             except Exception as exc:
                 error_event = {
@@ -207,22 +262,48 @@ class PlaygroundService:
                 }
                 yield f"data: {json.dumps(error_event)}\n\n"
             latency_ms = int((time.monotonic() - start) * 1000)
+            done = done_event or {}
+            content = done.get("content") or full_text
 
-            if full_text:
+            if content or tool_events:
                 async with self.db.session() as session:
                     thread_repo = ThreadRepo(session)
-                    await thread_repo.add_message(
-                        thread_id,
-                        role="assistant",
-                        content=full_text,
-                        latency_ms=latency_ms,
-                    )
+                    for event in tool_events:
+                        tool_name = event.get("tool") or "tool"
+                        is_start = event.get("type") == "tool_start"
+                        await thread_repo.add_message(
+                            thread_id,
+                            role="tool",
+                            content=f"[{'calling' if is_start else 'finished'} {tool_name}]",
+                            tool_name=tool_name,
+                            tool_call_id=event.get("call_id"),
+                            tool_input=event.get("args") if is_start else None,
+                            output_preview=f"{event.get('type')}:{tool_name}",
+                        )
+                    if content:
+                        await thread_repo.add_message(
+                            thread_id,
+                            role="assistant",
+                            content=content,
+                            latency_ms=latency_ms,
+                            provider=done.get("provider") or thread.provider,
+                            model=done.get("model") or thread.model_name,
+                            usage_json=done.get("usage"),
+                            thinking_json=done.get("thinking"),
+                            request_options_json=request_options,
+                            output_delta_count=done.get("output_delta_count"),
+                        )
 
             done_event = {
                 "type": "thread_done",
                 "thread_id": thread_id_enc,
                 "latency_ms": latency_ms,
-                "content": full_text,
+                "content": content,
+                "provider": done.get("provider") or thread.provider,
+                "model": done.get("model") or thread.model_name,
+                "usage": done.get("usage"),
+                "thinking": done.get("thinking"),
+                "output_delta_count": done.get("output_delta_count"),
             }
             yield f"data: {json.dumps(done_event)}\n\n"
             yield f"data: {json.dumps({'type': 'all_done'})}\n\n"
@@ -234,8 +315,8 @@ class PlaygroundService:
         session_id: int,
         user_id: int,
         message: str,
-        models: list[tuple[str, str]],
-    ) -> list[ModelThread]:
+        models: list[ModelSelection],
+    ) -> list[tuple[ModelThread, str | None]]:
         async with self.db.session() as session:
             session_repo = SessionRepo(session)
             thread_repo = ThreadRepo(session)
@@ -246,7 +327,7 @@ class PlaygroundService:
                 raise PlaygroundNotFoundError("Playground not found")
 
             threads = []
-            for provider, model_name in models:
+            for provider, model_name, reasoning_effort in models:
                 model = await model_repo.get_by_provider_model(provider, model_name)
                 if model is None:
                     raise ModelNotFoundError(f"Model not found: {provider}/{model_name}")
@@ -257,7 +338,9 @@ class PlaygroundService:
                     model_name,
                 )
                 if thread is None:
-                    runtime_session_id = await self.runtime.create_session(provider, model_name)
+                    runtime_session_id = await self.runtime.create_session(
+                        title=f"{provider}/{model_name}"
+                    )
                     thread = await thread_repo.create(
                         playground_session_id=session_id,
                         provider=provider,
@@ -265,10 +348,19 @@ class PlaygroundService:
                         runtime_session_id=runtime_session_id,
                         model_id=model.id,
                     )
-                threads.append(thread)
+                threads.append((thread, reasoning_effort))
 
-            for thread in threads:
-                await thread_repo.add_message(thread.id, role="user", content=message)
+            for thread, reasoning_effort in threads:
+                await thread_repo.add_message(
+                    thread.id,
+                    role="user",
+                    content=message,
+                    request_options_json=_request_options(
+                        thread.provider,
+                        thread.model_name,
+                        reasoning_effort,
+                    ),
+                )
 
             return threads
 
@@ -293,3 +385,14 @@ class PlaygroundService:
 
             await thread_repo.add_message(thread_id, role="user", content=message)
             return thread
+
+
+def _request_options(
+    provider: str,
+    model_name: str,
+    reasoning_effort: str | None,
+) -> dict[str, str]:
+    options = {"provider": provider, "model": model_name}
+    if reasoning_effort:
+        options["reasoning_effort"] = reasoning_effort
+    return options

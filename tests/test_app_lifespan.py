@@ -10,7 +10,11 @@ async def test_lifespan_initializes_and_closes_app_resources(monkeypatch) -> Non
     async def list_active(self):
         return []
 
+    async def sync_runtime_models(repo, runtime):
+        return 0
+
     monkeypatch.setattr(ModelRepo, "list_active", list_active)
+    monkeypatch.setattr("playground.app.sync_runtime_models", sync_runtime_models)
     app = create_app(
         Settings(
             secret_key="test",

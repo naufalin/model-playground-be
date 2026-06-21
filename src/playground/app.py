@@ -10,6 +10,7 @@ from playground.config import Settings, get_settings
 from playground.db.connection import Database
 from playground.db.repos.model_repo import ModelRepo
 from playground.models.router import router as models_router
+from playground.models.service import sync_runtime_models
 from playground.runtime.client import AgentRuntimeClient
 from playground.sessions.router import router as playground_router
 
@@ -26,6 +27,13 @@ async def lifespan(app: FastAPI):
     app.state.runtime_client = runtime_client
 
     model_repo = ModelRepo(db)
+    try:
+        await sync_runtime_models(model_repo, runtime_client)
+    except Exception as exc:  # noqa: BLE001
+        import logging
+
+        logging.warning("Could not sync runtime models: %s", exc)
+
     models = await model_repo.list_active()
     if not models:
         import logging

@@ -3,6 +3,7 @@
 from datetime import datetime
 
 from sqlalchemy import (
+    JSON,
     Boolean,
     DateTime,
     ForeignKey,
@@ -39,11 +40,18 @@ class LlmModel(Base):
     __table_args__ = (UniqueConstraint("provider", "model_name", name="uq_provider_model"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    runtime_model_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     provider: Mapped[str] = mapped_column(String(50), nullable=False)
-    model_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    model_name: Mapped[str] = mapped_column(String(200), nullable=False)
     display_name: Mapped[str] = mapped_column(String(150), nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    supports_reasoning: Mapped[bool] = mapped_column(Boolean, default=False)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    config_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
 
 
 class PlaygroundSession(Base):
@@ -84,7 +92,7 @@ class ModelThread(Base):
         Integer, ForeignKey("llm_models.id", ondelete="SET NULL"), nullable=True
     )
     provider: Mapped[str] = mapped_column(String(50), nullable=False)
-    model_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    model_name: Mapped[str] = mapped_column(String(200), nullable=False)
     runtime_session_id: Mapped[str] = mapped_column(String(50), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
@@ -104,6 +112,16 @@ class Message(Base):
     role: Mapped[str] = mapped_column(String(20), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    tool_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    tool_call_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    tool_input: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    output_preview: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    provider: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    model: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    usage_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    thinking_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    request_options_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    output_delta_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     thread: Mapped["ModelThread"] = relationship(back_populates="messages")

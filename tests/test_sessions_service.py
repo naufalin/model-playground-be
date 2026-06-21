@@ -15,19 +15,47 @@ from playground.sessions.service import (
 
 class FakeRuntime:
     def __init__(self) -> None:
-        self.created: list[tuple[str, str]] = []
+        self.created: list[str] = []
 
-    async def create_session(self, provider: str, model_name: str) -> str:
-        self.created.append((provider, model_name))
-        return f"runtime-{provider}-{model_name}"
+    async def create_session(self, title: str = "New Session") -> str:
+        self.created.append(title)
+        return f"runtime-{title}"
 
-    async def chat_stream(self, session_id: str, message: str):
+    async def chat_stream(
+        self,
+        session_id: str,
+        message: str,
+        *,
+        provider: str | None = None,
+        model: str | None = None,
+        reasoning_effort: str | None = None,
+    ):
+        yield {
+            "type": "thinking_delta",
+            "delta": "thinking",
+            "kind": "reasoning",
+        }
+        yield {
+            "type": "tool_start",
+            "tool": "web_search",
+            "call_id": "call-1",
+            "args": {"query": "hello"},
+        }
+        yield {"type": "tool_end", "tool": "web_search", "call_id": "call-1"}
         yield {"type": "text_delta", "delta": "hello "}
         yield {"type": "text_delta", "delta": "world"}
+        yield {
+            "type": "done",
+            "provider": provider,
+            "model": model,
+            "usage": {"total_tokens": 10, "reasoning_tokens": 2, "perf": {"ttft_ms": 5}},
+            "thinking": {"reasoning": "visible thought"},
+            "output_delta_count": 2,
+        }
 
 
 class ErrorRuntime(FakeRuntime):
-    async def chat_stream(self, session_id: str, message: str):
+    async def chat_stream(self, session_id: str, message: str, **kwargs):
         raise RuntimeError("runtime failed")
         yield
 
@@ -127,22 +155,22 @@ async def test_multi_chat_creates_threads_only_for_valid_models(db: Database) ->
         encode(playground.id),
         user.id,
         "hello",
-        [(model.provider, model.model_name)],
+        [(model.provider, model.model_name, None)],
     )
 
     async with db.session() as session:
         threads = await ThreadRepo(session).get_by_session(playground.id)
 
-    assert runtime.created == [("openai", "gpt-test")]
+    assert runtime.created == ["openai/gpt-test"]
     assert len(threads) == 1
-    assert threads[0].runtime_session_id == "runtime-openai-gpt-test"
+    assert threads[0].runtime_session_id == "runtime-openai/gpt-test"
 
     with pytest.raises(ModelNotFoundError):
         await service.stream_multi_chat(
             encode(playground.id),
             user.id,
             "hello",
-            [("openai", "missing")],
+            [("openai", "missing", None)],
         )
 
 
@@ -156,7 +184,7 @@ async def test_multi_chat_persists_user_and_assistant_messages(db: Database) -> 
         encode(playground.id),
         user.id,
         "hello",
-        [(model.provider, model.model_name)],
+        [(model.provider, model.model_name, "high")],
     )
     chunks = [chunk async for chunk in stream]
 
@@ -165,9 +193,21 @@ async def test_multi_chat_persists_user_and_assistant_messages(db: Database) -> 
         messages = threads[0].messages
 
     assert chunks[-1] == 'data: {"type": "all_done"}\n\n'
-    assert [message.role for message in messages] == ["user", "assistant"]
+    assert [message.role for message in messages] == ["user", "tool", "tool", "assistant"]
     assert messages[0].content == "hello"
-    assert messages[1].content == "hello world"
+    assert messages[0].request_options_json == {
+        "provider": "openai",
+        "model": "gpt-test",
+        "reasoning_effort": "high",
+    }
+    assert messages[1].tool_name == "web_search"
+    assert messages[1].tool_input == {"query": "hello"}
+    assert messages[3].content == "hello world"
+    assert messages[3].provider == "openai"
+    assert messages[3].model == "gpt-test"
+    assert messages[3].usage_json["reasoning_tokens"] == 2
+    assert messages[3].thinking_json["reasoning"] == "visible thought"
+    assert messages[3].output_delta_count == 2
 
 
 async def test_single_chat_emits_error_event_when_runtime_fails(db: Database) -> None:

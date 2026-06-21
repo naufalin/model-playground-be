@@ -107,7 +107,7 @@ async def chat_multi(
             encoded_id,
             user.id,
             body.message,
-            [(model.provider, model.model_name) for model in body.models],
+            [(model.provider, model.model_name, model.reasoning_effort) for model in body.models],
         )
     except PlaygroundError as exc:
         _raise_http_error(exc)

@@ -18,6 +18,7 @@ class Settings(BaseSettings):
 
     # Agent Runtime
     agent_runtime_url: str = "http://localhost:8000"
+    agent_runtime_bearer_token: str = ""
 
     # CORS
     cors_origins: list[str] = ["*"]
