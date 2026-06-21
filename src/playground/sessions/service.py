@@ -163,7 +163,9 @@ class PlaygroundService:
         async def _stream() -> AsyncGenerator[str, None]:
             thread_texts: dict[int, str] = {thread.id: "" for thread, _ in threads}
             thread_done: dict[int, dict[str, Any]] = {}
-            tool_events: dict[int, list[dict[str, Any]]] = {thread.id: [] for thread, _ in threads}
+            timeline_events: dict[int, list[dict[str, Any]]] = {
+                thread.id: [] for thread, _ in threads
+            }
             request_options = {
                 thread.id: _request_options(thread.provider, thread.model_name, reasoning_effort)
                 for thread, reasoning_effort in threads
@@ -179,9 +181,13 @@ class PlaygroundService:
                     if tid_encoded and data.get("type") == "thread_done":
                         tid = decode(tid_encoded)
                         thread_done[tid] = data
-                    if tid_encoded and data.get("type") in {"tool_start", "tool_end"}:
+                    if tid_encoded and data.get("type") in {
+                        "thinking_delta",
+                        "tool_start",
+                        "tool_end",
+                    }:
                         tid = decode(tid_encoded)
-                        tool_events.setdefault(tid, []).append(data)
+                        _append_timeline_event(timeline_events.setdefault(tid, []), data)
                 except (json.JSONDecodeError, ValueError):
                     pass
                 yield chunk
@@ -189,20 +195,27 @@ class PlaygroundService:
             async with self.db.session() as session:
                 thread_repo = ThreadRepo(session)
                 for thread, _reasoning_effort in threads:
-                    for event in tool_events.get(thread.id, []):
-                        tool_name = event.get("tool") or "tool"
-                        is_start = event.get("type") == "tool_start"
-                        await thread_repo.add_message(
-                            thread.id,
-                            role="tool",
-                            content=f"[{'calling' if is_start else 'finished'} {tool_name}]",
-                            tool_name=tool_name,
-                            tool_call_id=event.get("call_id"),
-                            tool_input=event.get("args") if is_start else None,
-                            output_preview=f"{event.get('type')}:{tool_name}",
-                        )
-
                     done = thread_done.get(thread.id, {})
+                    timeline = timeline_events.get(thread.id, [])
+                    has_thinking = any(event.get("type") == "thinking" for event in timeline)
+                    if not has_thinking and done.get("thinking"):
+                        thinking_text = _thinking_text(
+                            done.get("thinking"),
+                            done.get("provider") or thread.provider,
+                        )
+                        if thinking_text:
+                            timeline.append(
+                                {
+                                    "type": "thinking",
+                                    "kind": _thinking_kind(done.get("provider") or thread.provider),
+                                    "content": thinking_text,
+                                    "thinking": done.get("thinking"),
+                                }
+                            )
+
+                    for event in timeline:
+                        await _persist_timeline_event(thread_repo, thread.id, event)
+
                     content = thread_texts.get(thread.id, "")
                     content = done.get("content") or content
                     if content:
@@ -238,7 +251,7 @@ class PlaygroundService:
             latency_ms = 0
             start = time.monotonic()
             done_event: dict[str, Any] | None = None
-            tool_events: list[dict[str, Any]] = []
+            timeline_events: list[dict[str, Any]] = []
             request_options = _request_options(thread.provider, thread.model_name, None)
             try:
                 async for event in self.runtime.chat_stream(
@@ -253,8 +266,8 @@ class PlaygroundService:
                     event["thread_id"] = thread_id_enc
                     if event.get("type") == "text_delta":
                         full_text += event.get("delta", "")
-                    if event.get("type") in {"tool_start", "tool_end"}:
-                        tool_events.append(event)
+                    if event.get("type") in {"thinking_delta", "tool_start", "tool_end"}:
+                        _append_timeline_event(timeline_events, event)
                     yield f"data: {json.dumps(event)}\n\n"
             except Exception as exc:
                 error_event = {
@@ -267,21 +280,27 @@ class PlaygroundService:
             done = done_event or {}
             content = done.get("content") or full_text
 
-            if content or tool_events:
+            has_thinking = any(event.get("type") == "thinking" for event in timeline_events)
+            if not has_thinking and done.get("thinking"):
+                thinking_text = _thinking_text(
+                    done.get("thinking"),
+                    done.get("provider") or thread.provider,
+                )
+                if thinking_text:
+                    timeline_events.append(
+                        {
+                            "type": "thinking",
+                            "kind": _thinking_kind(done.get("provider") or thread.provider),
+                            "content": thinking_text,
+                            "thinking": done.get("thinking"),
+                        }
+                    )
+
+            if content or timeline_events:
                 async with self.db.session() as session:
                     thread_repo = ThreadRepo(session)
-                    for event in tool_events:
-                        tool_name = event.get("tool") or "tool"
-                        is_start = event.get("type") == "tool_start"
-                        await thread_repo.add_message(
-                            thread_id,
-                            role="tool",
-                            content=f"[{'calling' if is_start else 'finished'} {tool_name}]",
-                            tool_name=tool_name,
-                            tool_call_id=event.get("call_id"),
-                            tool_input=event.get("args") if is_start else None,
-                            output_preview=f"{event.get('type')}:{tool_name}",
-                        )
+                    for event in timeline_events:
+                        await _persist_timeline_event(thread_repo, thread_id, event)
                     if content:
                         await thread_repo.add_message(
                             thread_id,
@@ -398,3 +417,83 @@ def _request_options(
     if reasoning_effort:
         options["reasoning_effort"] = reasoning_effort
     return options
+
+
+def _tool_output_preview(event: dict[str, Any], tool_name: str) -> str:
+    preview = event.get("output_preview")
+    if event.get("type") == "tool_end" and isinstance(preview, str) and preview:
+        return preview
+    return f"{event.get('type')}:{tool_name}"
+
+
+def _append_timeline_event(timeline: list[dict[str, Any]], event: dict[str, Any]) -> None:
+    if event.get("type") == "thinking_delta":
+        delta = event.get("delta")
+        if not isinstance(delta, str) or not delta:
+            return
+        kind = event.get("kind") if isinstance(event.get("kind"), str) else "reasoning"
+        if timeline and timeline[-1].get("type") == "thinking" and timeline[-1].get("kind") == kind:
+            timeline[-1]["content"] = f"{timeline[-1].get('content', '')}{delta}"
+            timeline[-1]["thinking"] = {kind: timeline[-1]["content"]}
+            return
+        timeline.append(
+            {
+                "type": "thinking",
+                "kind": kind,
+                "content": delta,
+                "thinking": {kind: delta},
+            }
+        )
+        return
+
+    if event.get("type") in {"tool_start", "tool_end"}:
+        timeline.append(event)
+
+
+async def _persist_timeline_event(
+    thread_repo: ThreadRepo,
+    thread_id: int,
+    event: dict[str, Any],
+) -> None:
+    if event.get("type") == "thinking":
+        await thread_repo.add_message(
+            thread_id,
+            role="thinking",
+            content=str(event.get("content") or ""),
+            thinking_json=event.get("thinking"),
+        )
+        return
+
+    tool_name = event.get("tool") or "tool"
+    is_start = event.get("type") == "tool_start"
+    output_preview = _tool_output_preview(event, tool_name)
+    await thread_repo.add_message(
+        thread_id,
+        role="tool",
+        content=f"[{'calling' if is_start else 'finished'} {tool_name}]",
+        tool_name=tool_name,
+        tool_call_id=event.get("call_id"),
+        tool_input=event.get("args") if is_start else None,
+        output_preview=output_preview,
+    )
+
+
+def _thinking_kind(provider: str | None) -> str:
+    return "summary" if provider == "openai" else "reasoning"
+
+
+def _thinking_text(thinking: Any, provider: str | None) -> str:
+    if isinstance(thinking, str):
+        return thinking
+    if not isinstance(thinking, dict):
+        return ""
+
+    preferred = _thinking_kind(provider)
+    value = thinking.get(preferred)
+    if isinstance(value, str) and value:
+        return value
+
+    fallback = thinking.get("reasoning") or thinking.get("summary")
+    if isinstance(fallback, str):
+        return fallback
+    return ""

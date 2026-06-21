@@ -21,7 +21,7 @@ async def fanout_chat(
     async def _pump(thread: ModelThread, reasoning_effort: str | None) -> None:
         thread_id = encode(thread.id)
         try:
-            await queue.put(json.dumps({"type": "thread_start", "thread_id": thread_id}))
+            await queue.put(json.dumps({"type": "thread_start", "thread_id": thread_id, "provider": thread.provider, "model": thread.model_name}))
 
             full_text = ""
             start = time.monotonic()

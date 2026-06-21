@@ -10,6 +10,7 @@ from playground.sessions.service import (
     ModelNotFoundError,
     PlaygroundNotFoundError,
     PlaygroundService,
+    _tool_output_preview,
 )
 
 
@@ -41,7 +42,12 @@ class FakeRuntime:
             "call_id": "call-1",
             "args": {"query": "hello"},
         }
-        yield {"type": "tool_end", "tool": "web_search", "call_id": "call-1"}
+        yield {
+            "type": "tool_end",
+            "tool": "web_search",
+            "call_id": "call-1",
+            "output_preview": '{"results":[{"title":"Gold price"}]}',
+        }
         yield {"type": "text_delta", "delta": "hello "}
         yield {"type": "text_delta", "delta": "world"}
         yield {
@@ -58,6 +64,27 @@ class ErrorRuntime(FakeRuntime):
     async def chat_stream(self, session_id: str, message: str, **kwargs):
         raise RuntimeError("runtime failed")
         yield
+
+
+class DoneOnlyThinkingRuntime(FakeRuntime):
+    async def chat_stream(
+        self,
+        session_id: str,
+        message: str,
+        *,
+        provider: str | None = None,
+        model: str | None = None,
+        reasoning_effort: str | None = None,
+    ):
+        yield {"type": "text_delta", "delta": "done-only"}
+        yield {
+            "type": "done",
+            "provider": provider,
+            "model": model,
+            "usage": {"total_tokens": 4},
+            "thinking": {"summary": "final summary"},
+            "output_delta_count": 1,
+        }
 
 
 @pytest.fixture
@@ -213,21 +240,67 @@ async def test_multi_chat_persists_user_and_assistant_messages(db: Database) -> 
         messages = threads[0].messages
 
     assert chunks[-1] == 'data: {"type": "all_done"}\n\n'
-    assert [message.role for message in messages] == ["user", "tool", "tool", "assistant"]
+    assert [message.role for message in messages] == [
+        "user",
+        "thinking",
+        "tool",
+        "tool",
+        "assistant",
+    ]
     assert messages[0].content == "hello"
     assert messages[0].request_options_json == {
         "provider": "openai",
         "model": "gpt-test",
         "reasoning_effort": "high",
     }
-    assert messages[1].tool_name == "web_search"
-    assert messages[1].tool_input == {"query": "hello"}
-    assert messages[3].content == "hello world"
-    assert messages[3].provider == "openai"
-    assert messages[3].model == "gpt-test"
-    assert messages[3].usage_json["reasoning_tokens"] == 2
-    assert messages[3].thinking_json["reasoning"] == "visible thought"
-    assert messages[3].output_delta_count == 2
+    assert messages[1].content == "thinking"
+    assert messages[1].thinking_json == {"reasoning": "thinking"}
+    assert messages[2].tool_name == "web_search"
+    assert messages[2].tool_input == {"query": "hello"}
+    assert messages[3].output_preview == '{"results":[{"title":"Gold price"}]}'
+    assert messages[4].content == "hello world"
+    assert messages[4].provider == "openai"
+    assert messages[4].model == "gpt-test"
+    assert messages[4].usage_json["reasoning_tokens"] == 2
+    assert messages[4].thinking_json["reasoning"] == "visible thought"
+    assert messages[4].output_delta_count == 2
+
+
+async def test_multi_chat_persists_done_only_thinking_before_assistant(
+    db: Database,
+) -> None:
+    user = await create_user(db)
+    model = await create_model(db)
+    playground = await create_session(db, user.id)
+    service = PlaygroundService(db, DoneOnlyThinkingRuntime())
+
+    stream = await service.stream_multi_chat(
+        encode(playground.id),
+        user.id,
+        "hello",
+        [(model.provider, model.model_name, "high")],
+    )
+    chunks = [chunk async for chunk in stream]
+
+    async with db.session() as session:
+        threads = await ThreadRepo(session).get_by_session(playground.id)
+        messages = threads[0].messages
+
+    assert chunks[-1] == 'data: {"type": "all_done"}\n\n'
+    assert [message.role for message in messages] == ["user", "thinking", "assistant"]
+    assert messages[1].content == "final summary"
+    assert messages[1].thinking_json == {"summary": "final summary"}
+    assert messages[2].content == "done-only"
+
+
+def test_tool_output_preview_falls_back_for_old_runtime_events() -> None:
+    assert (
+        _tool_output_preview(
+            {"type": "tool_end", "tool": "web_search", "call_id": "call-1"},
+            "web_search",
+        )
+        == "tool_end:web_search"
+    )
 
 
 async def test_single_chat_emits_error_event_when_runtime_fails(db: Database) -> None:
