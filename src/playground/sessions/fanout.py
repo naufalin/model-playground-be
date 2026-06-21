@@ -25,6 +25,7 @@ async def fanout_chat(
 
             full_text = ""
             start = time.monotonic()
+            first_token_ms: int | None = None
             done_event: dict | None = None
             async for event in runtime.chat_stream(
                 thread.runtime_session_id,
@@ -39,6 +40,8 @@ async def fanout_chat(
                 event["thread_id"] = thread_id
                 await queue.put(json.dumps(event))
                 if event.get("type") == "text_delta":
+                    if first_token_ms is None and event.get("delta", "").strip():
+                        first_token_ms = int((time.monotonic() - start) * 1000)
                     full_text += event.get("delta", "")
 
             latency_ms = int((time.monotonic() - start) * 1000)
@@ -54,7 +57,10 @@ async def fanout_chat(
                         "content": content,
                         "provider": (done_event or {}).get("provider") or thread.provider,
                         "model": (done_event or {}).get("model") or thread.model_name,
-                        "usage": (done_event or {}).get("usage"),
+                        "usage": _usage_with_ttft(
+                            (done_event or {}).get("usage"),
+                            first_token_ms,
+                        ),
                         "thinking": (done_event or {}).get("thinking"),
                         "output_delta_count": (done_event or {}).get("output_delta_count"),
                     }
@@ -87,3 +93,15 @@ async def fanout_chat(
         yield f"data: {item}\n\n"
 
     yield f'data: {json.dumps({"type": "all_done"})}\n\n'
+
+
+def _usage_with_ttft(usage: dict | None, ttft_ms: int | None) -> dict | None:
+    if ttft_ms is None:
+        return usage
+
+    next_usage = dict(usage or {})
+    perf = next_usage.get("perf")
+    next_perf = dict(perf) if isinstance(perf, dict) else {}
+    next_perf.setdefault("ttft_ms", ttft_ms)
+    next_usage["perf"] = next_perf
+    return next_usage

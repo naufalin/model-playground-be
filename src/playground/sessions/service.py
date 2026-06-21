@@ -249,7 +249,9 @@ class PlaygroundService:
             thread_id_enc = encode(thread_id)
             full_text = ""
             latency_ms = 0
+            yield f"data: {json.dumps({'type': 'thread_start', 'thread_id': thread_id_enc, 'provider': thread.provider, 'model': thread.model_name})}\n\n"
             start = time.monotonic()
+            first_token_ms: int | None = None
             done_event: dict[str, Any] | None = None
             timeline_events: list[dict[str, Any]] = []
             request_options = _request_options(thread.provider, thread.model_name, None)
@@ -265,6 +267,8 @@ class PlaygroundService:
                         continue
                     event["thread_id"] = thread_id_enc
                     if event.get("type") == "text_delta":
+                        if first_token_ms is None and event.get("delta", "").strip():
+                            first_token_ms = int((time.monotonic() - start) * 1000)
                         full_text += event.get("delta", "")
                     if event.get("type") in {"thinking_delta", "tool_start", "tool_end"}:
                         _append_timeline_event(timeline_events, event)
@@ -279,6 +283,7 @@ class PlaygroundService:
             latency_ms = int((time.monotonic() - start) * 1000)
             done = done_event or {}
             content = done.get("content") or full_text
+            usage = _usage_with_ttft(done.get("usage"), first_token_ms)
 
             has_thinking = any(event.get("type") == "thinking" for event in timeline_events)
             if not has_thinking and done.get("thinking"):
@@ -309,7 +314,7 @@ class PlaygroundService:
                             latency_ms=latency_ms,
                             provider=done.get("provider") or thread.provider,
                             model=done.get("model") or thread.model_name,
-                            usage_json=done.get("usage"),
+                            usage_json=usage,
                             thinking_json=done.get("thinking"),
                             request_options_json=request_options,
                             output_delta_count=done.get("output_delta_count"),
@@ -322,7 +327,7 @@ class PlaygroundService:
                 "content": content,
                 "provider": done.get("provider") or thread.provider,
                 "model": done.get("model") or thread.model_name,
-                "usage": done.get("usage"),
+                "usage": usage,
                 "thinking": done.get("thinking"),
                 "output_delta_count": done.get("output_delta_count"),
             }
@@ -424,6 +429,18 @@ def _tool_output_preview(event: dict[str, Any], tool_name: str) -> str:
     if event.get("type") == "tool_end" and isinstance(preview, str) and preview:
         return preview
     return f"{event.get('type')}:{tool_name}"
+
+
+def _usage_with_ttft(usage: dict[str, Any] | None, ttft_ms: int | None) -> dict[str, Any] | None:
+    if ttft_ms is None:
+        return usage
+
+    next_usage = dict(usage or {})
+    perf = next_usage.get("perf")
+    next_perf = dict(perf) if isinstance(perf, dict) else {}
+    next_perf.setdefault("ttft_ms", ttft_ms)
+    next_usage["perf"] = next_perf
+    return next_usage
 
 
 def _append_timeline_event(timeline: list[dict[str, Any]], event: dict[str, Any]) -> None:

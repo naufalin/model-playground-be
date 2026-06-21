@@ -87,6 +87,27 @@ class DoneOnlyThinkingRuntime(FakeRuntime):
         }
 
 
+class MissingTtftRuntime(FakeRuntime):
+    async def chat_stream(
+        self,
+        session_id: str,
+        message: str,
+        *,
+        provider: str | None = None,
+        model: str | None = None,
+        reasoning_effort: str | None = None,
+    ):
+        yield {"type": "text_delta", "delta": "hello"}
+        yield {
+            "type": "done",
+            "provider": provider,
+            "model": model,
+            "usage": {"output_tokens": 2, "total_tokens": 3},
+            "thinking": None,
+            "output_delta_count": 1,
+        }
+
+
 @pytest.fixture
 async def db() -> Database:
     database = Database("sqlite+aiosqlite:///:memory:")
@@ -291,6 +312,39 @@ async def test_multi_chat_persists_done_only_thinking_before_assistant(
     assert messages[1].content == "final summary"
     assert messages[1].thinking_json == {"summary": "final summary"}
     assert messages[2].content == "done-only"
+
+
+async def test_single_chat_adds_ttft_when_runtime_usage_omits_it(db: Database) -> None:
+    user = await create_user(db)
+    playground = await create_session(db, user.id)
+    async with db.session() as session:
+        thread = ModelThread(
+            playground_session_id=playground.id,
+            provider="openai",
+            model_name="gpt-test",
+            runtime_session_id="runtime-existing",
+        )
+        session.add(thread)
+        await session.flush()
+        thread_id = thread.id
+
+    service = PlaygroundService(db, MissingTtftRuntime())
+    stream = await service.stream_single_chat(
+        encode(playground.id),
+        encode(thread_id),
+        user.id,
+        "hello",
+    )
+    chunks = [chunk async for chunk in stream]
+
+    async with db.session() as session:
+        stored = await ThreadRepo(session).get(thread_id)
+        assert stored is not None
+        assistant = [message for message in stored.messages if message.role == "assistant"][0]
+
+    assert any('"type": "thread_start"' in chunk for chunk in chunks)
+    assert assistant.usage_json["perf"]["ttft_ms"] >= 0
+    assert '"perf": {"ttft_ms":' in "".join(chunks)
 
 
 def test_tool_output_preview_falls_back_for_old_runtime_events() -> None:
