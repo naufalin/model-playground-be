@@ -89,6 +89,8 @@ class PlaygroundService:
             for thread in threads:
                 model = await model_repo.get_by_provider_model(thread.provider, thread.model_name)
                 display_name = model.display_name if model else thread.model_name
+                # Sort messages by creation time — selectinload doesn't guarantee order
+                sorted_messages = sorted(thread.messages, key=lambda m: m.created_at)
                 messages = [
                     MessageOut(
                         id=message.id,
@@ -107,7 +109,7 @@ class PlaygroundService:
                         request_options=message.request_options_json,
                         created_at=message.created_at,
                     )
-                    for message in thread.messages
+                    for message in sorted_messages
                 ]
                 thread_outs.append(
                     ThreadOut(

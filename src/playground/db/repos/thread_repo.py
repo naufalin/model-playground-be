@@ -44,7 +44,7 @@ class ThreadRepo:
             return thread
 
     async def get_by_session(self, playground_session_id: int) -> list[ModelThread]:
-        """Get all threads for a playground session, with messages."""
+        """Get all threads for a playground session, with messages ordered by creation."""
         async with self._session() as s:
             result = await s.execute(
                 select(ModelThread)
