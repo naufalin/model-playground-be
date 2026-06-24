@@ -10,6 +10,7 @@ from playground.sessions.service import (
     ModelNotFoundError,
     PlaygroundNotFoundError,
     PlaygroundService,
+    _normalize_tool_name,
     _tool_output_preview,
 )
 
@@ -103,6 +104,36 @@ class MissingTtftRuntime(FakeRuntime):
             "provider": provider,
             "model": model,
             "usage": {"output_tokens": 2, "total_tokens": 3},
+            "thinking": None,
+            "output_delta_count": 1,
+        }
+
+
+class MarkupToolRuntime(FakeRuntime):
+    async def chat_stream(
+        self,
+        session_id: str,
+        message: str,
+        *,
+        provider: str | None = None,
+        model: str | None = None,
+        reasoning_effort: str | None = None,
+    ):
+        yield {
+            "type": "tool_start",
+            "tool": (
+                "web_search_args(_web_search)<tool_call>query</arg_key>"
+                "<arg_value>Cut Nyak Dien pahlawan perjuangan Aceh Belanda</arg_value>"
+            ),
+            "call_id": "call-1",
+            "args": {"location": "ID", "language": "id", "page": "0"},
+        }
+        yield {"type": "text_delta", "delta": "done"}
+        yield {
+            "type": "done",
+            "provider": provider,
+            "model": model,
+            "usage": {"total_tokens": 3},
             "thinking": None,
             "output_delta_count": 1,
         }
@@ -287,6 +318,33 @@ async def test_multi_chat_persists_user_and_assistant_messages(db: Database) -> 
     assert messages[4].output_delta_count == 2
 
 
+async def test_multi_chat_persists_markup_tool_name_without_overflow(db: Database) -> None:
+    user = await create_user(db)
+    model = await create_model(db)
+    playground = await create_session(db, user.id)
+    service = PlaygroundService(db, MarkupToolRuntime())
+
+    stream = await service.stream_multi_chat(
+        encode(playground.id),
+        user.id,
+        "hello",
+        [(model.provider, model.model_name, None)],
+    )
+    chunks = [chunk async for chunk in stream]
+
+    async with db.session() as session:
+        threads = await ThreadRepo(session).get_by_session(playground.id)
+        messages = threads[0].messages
+
+    assert chunks[-1] == 'data: {"type": "all_done"}\n\n'
+    tool_message = [message for message in messages if message.role == "tool"][0]
+    assert tool_message.tool_name == "web_search"
+    assert len(tool_message.tool_name) <= 100
+    assert tool_message.content == "[calling web_search]"
+    assert "<tool_call>" not in tool_message.content
+    assert tool_message.tool_input == {"location": "ID", "language": "id", "page": "0"}
+
+
 async def test_multi_chat_persists_done_only_thinking_before_assistant(
     db: Database,
 ) -> None:
@@ -347,6 +405,16 @@ async def test_single_chat_adds_ttft_when_runtime_usage_omits_it(db: Database) -
     assert '"perf": {"ttft_ms":' in "".join(chunks)
 
 
+def test_normalize_tool_name_extracts_markup_tool_label() -> None:
+    assert (
+        _normalize_tool_name(
+            "web_search_args(_web_search)<tool_call>query</arg_key>"
+            "<arg_value>Cut Nyak Dien</arg_value>"
+        )
+        == "web_search"
+    )
+
+
 def test_tool_output_preview_falls_back_for_old_runtime_events() -> None:
     assert (
         _tool_output_preview(
@@ -355,6 +423,12 @@ def test_tool_output_preview_falls_back_for_old_runtime_events() -> None:
         )
         == "tool_end:web_search"
     )
+
+
+def test_tool_output_preview_truncates_long_values() -> None:
+    preview = _tool_output_preview({"type": "tool_end", "output_preview": "x" * 600}, "tool")
+
+    assert len(preview) == 500
 
 
 async def test_single_chat_emits_error_event_when_runtime_fails(db: Database) -> None:

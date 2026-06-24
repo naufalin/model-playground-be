@@ -249,7 +249,13 @@ class PlaygroundService:
             thread_id_enc = encode(thread_id)
             full_text = ""
             latency_ms = 0
-            yield f"data: {json.dumps({'type': 'thread_start', 'thread_id': thread_id_enc, 'provider': thread.provider, 'model': thread.model_name})}\n\n"
+            start_event = {
+                "type": "thread_start",
+                "thread_id": thread_id_enc,
+                "provider": thread.provider,
+                "model": thread.model_name,
+            }
+            yield f"data: {json.dumps(start_event)}\n\n"
             start = time.monotonic()
             first_token_ms: int | None = None
             done_event: dict[str, Any] | None = None
@@ -424,11 +430,41 @@ def _request_options(
     return options
 
 
+TOOL_NAME_MAX_LENGTH = 100
+OUTPUT_PREVIEW_MAX_LENGTH = 500
+
+
+def _bounded_text(value: str, max_length: int) -> str:
+    return value if len(value) <= max_length else value[:max_length]
+
+
+def _normalize_tool_name(raw_tool: Any) -> str:
+    if not isinstance(raw_tool, str):
+        return "tool"
+
+    tool = raw_tool.strip()
+    if not tool:
+        return "tool"
+
+    if "<tool_call>" in tool:
+        tool = tool.split("<tool_call>", 1)[0]
+    if tool.endswith(")") and "(" in tool:
+        inner = tool.rsplit("(", 1)[1][:-1].strip()
+        if inner:
+            tool = inner
+    if tool.endswith("_args"):
+        tool = tool[: -len("_args")]
+    if tool.startswith("_"):
+        tool = tool[1:]
+
+    return _bounded_text(tool or "tool", TOOL_NAME_MAX_LENGTH)
+
+
 def _tool_output_preview(event: dict[str, Any], tool_name: str) -> str:
     preview = event.get("output_preview")
     if event.get("type") == "tool_end" and isinstance(preview, str) and preview:
-        return preview
-    return f"{event.get('type')}:{tool_name}"
+        return _bounded_text(preview, OUTPUT_PREVIEW_MAX_LENGTH)
+    return _bounded_text(f"{event.get('type')}:{tool_name}", OUTPUT_PREVIEW_MAX_LENGTH)
 
 
 def _usage_with_ttft(usage: dict[str, Any] | None, ttft_ms: int | None) -> dict[str, Any] | None:
@@ -481,7 +517,7 @@ async def _persist_timeline_event(
         )
         return
 
-    tool_name = event.get("tool") or "tool"
+    tool_name = _normalize_tool_name(event.get("tool"))
     is_start = event.get("type") == "tool_start"
     output_preview = _tool_output_preview(event, tool_name)
     await thread_repo.add_message(
