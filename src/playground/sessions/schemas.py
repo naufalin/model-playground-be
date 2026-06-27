@@ -40,6 +40,7 @@ class MessageOut(BaseModel):
     tool_call_id: str | None = None
     tool_input: dict[str, Any] | None = None
     output_preview: str | None = None
+    viz_html: str | None = None
     output_delta_count: int | None = None
     request_options: dict[str, Any] | None = None
     created_at: datetime | None = None

@@ -105,6 +105,7 @@ class PlaygroundService:
                         tool_call_id=message.tool_call_id,
                         tool_input=message.tool_input,
                         output_preview=message.output_preview,
+                        viz_html=message.viz_html,
                         output_delta_count=message.output_delta_count,
                         request_options=message.request_options_json,
                         created_at=message.created_at,
@@ -166,14 +167,19 @@ class PlaygroundService:
             timeline_events: dict[int, list[dict[str, Any]]] = {
                 thread.id: [] for thread, _ in threads
             }
+            saw_all_done = False
             request_options = {
                 thread.id: _request_options(thread.provider, thread.model_name, reasoning_effort)
                 for thread, reasoning_effort in threads
             }
 
             async for chunk in fanout_chat(self.runtime, threads, message):
+                should_yield = True
                 try:
                     data = json.loads(chunk.removeprefix("data: ").strip())
+                    if data.get("type") == "all_done":
+                        saw_all_done = True
+                        should_yield = False
                     tid_encoded = data.get("thread_id")
                     if tid_encoded and data.get("type") == "text_delta":
                         tid = decode(tid_encoded)
@@ -190,7 +196,8 @@ class PlaygroundService:
                         _append_timeline_event(timeline_events.setdefault(tid, []), data)
                 except (json.JSONDecodeError, ValueError):
                     pass
-                yield chunk
+                if should_yield:
+                    yield chunk
 
             async with self.db.session() as session:
                 thread_repo = ThreadRepo(session)
@@ -231,6 +238,9 @@ class PlaygroundService:
                             request_options_json=request_options.get(thread.id),
                             output_delta_count=done.get("output_delta_count"),
                         )
+
+            if saw_all_done:
+                yield f"data: {json.dumps({'type': 'all_done'})}\n\n"
 
         return _stream()
 
@@ -467,6 +477,15 @@ def _tool_output_preview(event: dict[str, Any], tool_name: str) -> str:
     return _bounded_text(f"{event.get('type')}:{tool_name}", OUTPUT_PREVIEW_MAX_LENGTH)
 
 
+def _tool_viz_html(event: dict[str, Any], tool_name: str) -> str | None:
+    if event.get("type") != "tool_end":
+        return None
+    viz_html = event.get("viz_html")
+    if isinstance(viz_html, str) and viz_html:
+        return viz_html
+    return None
+
+
 def _usage_with_ttft(usage: dict[str, Any] | None, ttft_ms: int | None) -> dict[str, Any] | None:
     if ttft_ms is None:
         return usage
@@ -520,6 +539,7 @@ async def _persist_timeline_event(
     tool_name = _normalize_tool_name(event.get("tool"))
     is_start = event.get("type") == "tool_start"
     output_preview = _tool_output_preview(event, tool_name)
+    viz_html = _tool_viz_html(event, tool_name)
     await thread_repo.add_message(
         thread_id,
         role="tool",
@@ -528,6 +548,7 @@ async def _persist_timeline_event(
         tool_call_id=event.get("call_id"),
         tool_input=event.get("args") if is_start else None,
         output_preview=output_preview,
+        viz_html=viz_html,
     )
 
 

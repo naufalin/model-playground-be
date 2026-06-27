@@ -116,6 +116,7 @@ class Message(Base):
     tool_call_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     tool_input: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     output_preview: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    viz_html: Mapped[str | None] = mapped_column(Text, nullable=True)
     provider: Mapped[str | None] = mapped_column(String(50), nullable=True)
     model: Mapped[str | None] = mapped_column(String(200), nullable=True)
     usage_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)

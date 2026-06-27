@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from playground.db.connection import Database
@@ -84,6 +86,40 @@ class DoneOnlyThinkingRuntime(FakeRuntime):
             "model": model,
             "usage": {"total_tokens": 4},
             "thinking": {"summary": "final summary"},
+            "output_delta_count": 1,
+        }
+
+
+class VisualizationRuntime(FakeRuntime):
+    async def chat_stream(
+        self,
+        session_id: str,
+        message: str,
+        *,
+        provider: str | None = None,
+        model: str | None = None,
+        reasoning_effort: str | None = None,
+    ):
+        yield {
+            "type": "tool_start",
+            "tool": "tool",
+            "call_id": "viz-1",
+            "args": {"chart_type": "bar"},
+        }
+        yield {
+            "type": "tool_end",
+            "tool": "tool",
+            "call_id": "viz-1",
+            "output_preview": '{"html":"<!DOCTYPE html>"}',
+            "viz_html": "<!DOCTYPE html><html><body><div id='chart'></div></body></html>",
+        }
+        yield {"type": "text_delta", "delta": "Here is the chart."}
+        yield {
+            "type": "done",
+            "provider": provider,
+            "model": model,
+            "usage": {"total_tokens": 7},
+            "thinking": None,
             "output_delta_count": 1,
         }
 
@@ -318,6 +354,42 @@ async def test_multi_chat_persists_user_and_assistant_messages(db: Database) -> 
     assert messages[4].output_delta_count == 2
 
 
+async def test_multi_chat_persists_messages_before_all_done(db: Database) -> None:
+    user = await create_user(db)
+    model = await create_model(db)
+    playground = await create_session(db, user.id)
+    service = PlaygroundService(db, FakeRuntime())
+
+    stream = await service.stream_multi_chat(
+        encode(playground.id),
+        user.id,
+        "hello",
+        [(model.provider, model.model_name, None)],
+    )
+
+    saw_all_done = False
+    async for chunk in stream:
+        event = json.loads(chunk.removeprefix("data: ").strip())
+        if event.get("type") != "all_done":
+            continue
+
+        saw_all_done = True
+        async with db.session() as session:
+            threads = await ThreadRepo(session).get_by_session(playground.id)
+            messages = threads[0].messages
+
+        assert [message.role for message in messages] == [
+            "user",
+            "thinking",
+            "tool",
+            "tool",
+            "assistant",
+        ]
+        assert messages[-1].content == "hello world"
+
+    assert saw_all_done
+
+
 async def test_multi_chat_persists_markup_tool_name_without_overflow(db: Database) -> None:
     user = await create_user(db)
     model = await create_model(db)
@@ -370,6 +442,37 @@ async def test_multi_chat_persists_done_only_thinking_before_assistant(
     assert messages[1].content == "final summary"
     assert messages[1].thinking_json == {"summary": "final summary"}
     assert messages[2].content == "done-only"
+
+
+async def test_multi_chat_persists_visualization_html(db: Database) -> None:
+    user = await create_user(db)
+    model = await create_model(db)
+    playground = await create_session(db, user.id)
+    service = PlaygroundService(db, VisualizationRuntime())
+
+    stream = await service.stream_multi_chat(
+        encode(playground.id),
+        user.id,
+        "make a chart",
+        [(model.provider, model.model_name, None)],
+    )
+    chunks = [chunk async for chunk in stream]
+
+    async with db.session() as session:
+        threads = await ThreadRepo(session).get_by_session(playground.id)
+        tool_messages = [message for message in threads[0].messages if message.role == "tool"]
+
+    detail = await service.get_playground(encode(playground.id), user.id)
+    detail_tool_messages = [
+        message for message in detail.threads[0].messages if message.role == "tool"
+    ]
+
+    assert '"viz_html": "<!DOCTYPE html>' in "".join(chunks)
+    assert tool_messages[-1].tool_name == "tool"
+    assert tool_messages[-1].viz_html == (
+        "<!DOCTYPE html><html><body><div id='chart'></div></body></html>"
+    )
+    assert detail_tool_messages[-1].viz_html == tool_messages[-1].viz_html
 
 
 async def test_single_chat_adds_ttft_when_runtime_usage_omits_it(db: Database) -> None:
