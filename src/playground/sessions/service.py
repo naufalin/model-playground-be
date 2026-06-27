@@ -52,13 +52,19 @@ class PlaygroundService:
         self.db = db
         self.runtime = runtime
 
-    async def create_playground(self, user_id: int, title: str) -> PlaygroundOut:
+    async def create_playground(
+        self,
+        user_id: int,
+        title: str,
+        tools: list[str] | None = None,
+    ) -> PlaygroundOut:
         async with self.db.session() as session:
             session_repo = SessionRepo(session)
-            playground = await session_repo.create(user_id=user_id, title=title)
+            playground = await session_repo.create(user_id=user_id, title=title, tools=tools)
             return PlaygroundOut(
                 id=encode(playground.id),
                 title=playground.title,
+                tools=playground.tools_json,
                 created_at=playground.created_at,
             )
 
@@ -68,7 +74,12 @@ class PlaygroundService:
             sessions = await session_repo.list_by_user(user_id=user_id, limit=limit, offset=offset)
             total = await session_repo.count_by_user(user_id)
             items = [
-                PlaygroundOut(id=encode(s.id), title=s.title, created_at=s.created_at)
+                PlaygroundOut(
+                    id=encode(s.id),
+                    title=s.title,
+                    tools=s.tools_json,
+                    created_at=s.created_at,
+                )
                 for s in sessions
             ]
             return PlaygroundListOut(sessions=items, total=total)
@@ -125,20 +136,35 @@ class PlaygroundService:
             return PlaygroundDetail(
                 id=encode(playground.id),
                 title=playground.title,
+                tools=playground.tools_json,
                 created_at=playground.created_at,
                 threads=thread_outs,
             )
 
-    async def update_playground(self, encoded_id: str, user_id: int, title: str) -> PlaygroundOut:
+    async def update_playground(
+        self,
+        encoded_id: str,
+        user_id: int,
+        title: str | None = None,
+        tools: list[str] | None = None,
+        update_tools: bool = False,
+    ) -> PlaygroundOut:
         session_id = _decode_id(encoded_id, "Playground not found")
         async with self.db.session() as session:
             session_repo = SessionRepo(session)
-            playground = await session_repo.update_title(session_id, user_id, title)
+            playground = await session_repo.get_if_owner(session_id, user_id)
+            if playground is None:
+                raise PlaygroundNotFoundError("Playground not found")
+            if title is not None:
+                playground = await session_repo.update_title(session_id, user_id, title)
+            if update_tools:
+                playground = await session_repo.update_tools(session_id, user_id, tools)
             if playground is None:
                 raise PlaygroundNotFoundError("Playground not found")
             return PlaygroundOut(
                 id=encode(playground.id),
                 title=playground.title,
+                tools=playground.tools_json,
                 created_at=playground.created_at,
             )
 
@@ -157,9 +183,10 @@ class PlaygroundService:
         user_id: int,
         message: str,
         models: list[ModelSelection],
+        tools: list[str] | None = None,
     ) -> AsyncGenerator[str, None]:
         session_id = _decode_id(encoded_id, "Playground not found")
-        threads = await self._prepare_multi_chat(session_id, user_id, message, models)
+        threads = await self._prepare_multi_chat(session_id, user_id, message, models, tools)
 
         async def _stream() -> AsyncGenerator[str, None]:
             thread_texts: dict[int, str] = {thread.id: "" for thread, _ in threads}
@@ -173,7 +200,7 @@ class PlaygroundService:
                 for thread, reasoning_effort in threads
             }
 
-            async for chunk in fanout_chat(self.runtime, threads, message):
+            async for chunk in fanout_chat(self.runtime, threads, message, tools):
                 should_yield = True
                 try:
                     data = json.loads(chunk.removeprefix("data: ").strip())
@@ -250,6 +277,7 @@ class PlaygroundService:
         thread_encoded_id: str,
         user_id: int,
         message: str,
+        tools: list[str] | None = None,
     ) -> AsyncGenerator[str, None]:
         session_id = _decode_id(encoded_id, "Playground not found")
         thread_id = _decode_id(thread_encoded_id, "Thread not found")
@@ -277,6 +305,7 @@ class PlaygroundService:
                     message,
                     provider=thread.provider,
                     model=thread.model_name,
+                    tools=tools,
                 ):
                     if event.get("type") == "done":
                         done_event = event
@@ -358,6 +387,7 @@ class PlaygroundService:
         user_id: int,
         message: str,
         models: list[ModelSelection],
+        tools: list[str] | None = None,
     ) -> list[tuple[ModelThread, str | None]]:
         async with self.db.session() as session:
             session_repo = SessionRepo(session)
@@ -381,7 +411,8 @@ class PlaygroundService:
                 )
                 if thread is None:
                     runtime_session_id = await self.runtime.create_session(
-                        title=f"{provider}/{model_name}"
+                        title=f"{provider}/{model_name}",
+                        tools=tools,
                     )
                     thread = await thread_repo.create(
                         playground_session_id=session_id,

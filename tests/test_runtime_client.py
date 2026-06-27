@@ -28,7 +28,7 @@ async def test_runtime_client_sends_bearer_and_keeps_encoded_session_id(monkeypa
     def handler(request: httpx.Request) -> httpx.Response:
         seen_headers["authorization"] = request.headers.get("authorization")
         assert request.url.path == "/sessions"
-        assert json.loads(request.content) == {"title": "openrouter/model"}
+        assert json.loads(request.content) == {"title": "openrouter/model", "tools": None}
         return httpx.Response(201, json={"id": "encoded-runtime-id"})
 
     runtime = _runtime_with_transport(handler)
@@ -65,6 +65,7 @@ async def test_runtime_client_chat_stream_passes_model_options(monkeypatch) -> N
                 provider="openrouter",
                 model="vendor/model",
                 reasoning_effort="high",
+                tools=["web_search"],
             )
         ]
     finally:
@@ -75,8 +76,26 @@ async def test_runtime_client_chat_stream_passes_model_options(monkeypatch) -> N
         "provider": "openrouter",
         "model": "vendor/model",
         "reasoning_effort": "high",
+        "tools": ["web_search"],
     }
     assert events[-1]["type"] == "done"
+
+
+async def test_runtime_client_lists_tools(monkeypatch) -> None:
+    monkeypatch.setenv("SECRET_KEY", "test")
+    get_settings.cache_clear()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/tools"
+        return httpx.Response(200, json={"tools": [{"name": "web_search"}], "total": 1})
+
+    runtime = _runtime_with_transport(handler)
+    try:
+        payload = await runtime.list_tools()
+    finally:
+        await runtime.close()
+
+    assert payload == {"tools": [{"name": "web_search"}], "total": 1}
 
 
 async def test_runtime_client_lists_models(monkeypatch) -> None:

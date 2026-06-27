@@ -8,15 +8,18 @@ from pydantic import BaseModel, ConfigDict, Field
 
 class PlaygroundCreate(BaseModel):
     title: str = Field(default="New Playground", min_length=1, max_length=255)
+    tools: list[str] | None = Field(default=None, max_length=32)
 
 
 class PlaygroundUpdate(BaseModel):
-    title: str = Field(min_length=1, max_length=255)
+    title: str | None = Field(default=None, min_length=1, max_length=255)
+    tools: list[str] | None = Field(default=None, max_length=32)
 
 
 class PlaygroundOut(BaseModel):
     id: str
     title: str
+    tools: list[str] | None = None
     created_at: datetime | None = None
 
     model_config = ConfigDict(from_attributes=True)
@@ -61,6 +64,7 @@ class ThreadOut(BaseModel):
 class PlaygroundDetail(BaseModel):
     id: str
     title: str
+    tools: list[str] | None = None
     created_at: datetime | None = None
     threads: list[ThreadOut] = Field(default_factory=list)
 
@@ -76,7 +80,9 @@ class ModelSelect(BaseModel):
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1)
     models: list[ModelSelect]
+    tools: list[str] | None = Field(default=None, max_length=32)
 
 
 class ContinueChatRequest(BaseModel):
     message: str = Field(min_length=1)
+    tools: list[str] | None = Field(default=None, max_length=32)

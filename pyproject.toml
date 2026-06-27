@@ -50,6 +50,7 @@ select = ["E", "F", "I", "N", "W", "UP", "B", "SIM", "ASYNC"]
 "src/playground/auth/deps.py" = ["B008"]
 "src/playground/models/router.py" = ["B008"]
 "src/playground/sessions/router.py" = ["B008"]
+"src/playground/tools/router.py" = ["B008"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

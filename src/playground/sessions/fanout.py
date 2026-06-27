@@ -14,6 +14,7 @@ async def fanout_chat(
     runtime: AgentRuntimeClient,
     threads: list[tuple[ModelThread, str | None]],
     user_message: str,
+    tools: list[str] | None = None,
 ) -> AsyncGenerator[str, None]:
     """Merge N per-thread streaming responses into a single SSE stream."""
     queue: asyncio.Queue[str] = asyncio.Queue()
@@ -21,7 +22,16 @@ async def fanout_chat(
     async def _pump(thread: ModelThread, reasoning_effort: str | None) -> None:
         thread_id = encode(thread.id)
         try:
-            await queue.put(json.dumps({"type": "thread_start", "thread_id": thread_id, "provider": thread.provider, "model": thread.model_name}))
+            await queue.put(
+                json.dumps(
+                    {
+                        "type": "thread_start",
+                        "thread_id": thread_id,
+                        "provider": thread.provider,
+                        "model": thread.model_name,
+                    }
+                )
+            )
 
             full_text = ""
             start = time.monotonic()
@@ -33,6 +43,7 @@ async def fanout_chat(
                 provider=thread.provider,
                 model=thread.model_name,
                 reasoning_effort=reasoning_effort,
+                tools=tools,
             ):
                 if event.get("type") == "done":
                     done_event = event

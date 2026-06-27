@@ -59,6 +59,12 @@ class AgentRuntimeClient:
         resp.raise_for_status()
         return resp.json()
 
+    async def list_tools(self) -> dict[str, Any]:
+        """Return the runtime tool registry payload."""
+        resp = await self.client.get("/tools")
+        resp.raise_for_status()
+        return resp.json()
+
     async def create_model(
         self,
         *,
@@ -84,11 +90,15 @@ class AgentRuntimeClient:
         resp.raise_for_status()
         return resp.json()
 
-    async def create_session(self, title: str = "New Session") -> str:
+    async def create_session(
+        self,
+        title: str = "New Session",
+        tools: list[str] | None = None,
+    ) -> str:
         """Create a new runtime session and return its encoded ID."""
         resp = await self.client.post(
             "/sessions",
-            json={"title": title},
+            json={"title": title, "tools": tools},
         )
         resp.raise_for_status()
         data = resp.json()
@@ -102,6 +112,7 @@ class AgentRuntimeClient:
         provider: str | None = None,
         model: str | None = None,
         reasoning_effort: str | None = None,
+        tools: list[str] | None = None,
     ) -> AsyncGenerator[dict, None]:
         """Stream SSE events from a chat completion request.
 
@@ -115,6 +126,8 @@ class AgentRuntimeClient:
             payload["model"] = model
         if reasoning_effort is not None:
             payload["reasoning_effort"] = reasoning_effort
+        if tools is not None:
+            payload["tools"] = tools
         async with self.client.stream(
             "POST",
             url,

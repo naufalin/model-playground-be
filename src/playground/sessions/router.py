@@ -45,7 +45,7 @@ async def create_playground(
     user: User = Depends(get_current_user),
     service: PlaygroundService = Depends(get_playground_service),
 ) -> PlaygroundOut:
-    return await service.create_playground(user_id=user.id, title=body.title)
+    return await service.create_playground(user_id=user.id, title=body.title, tools=body.tools)
 
 
 @router.get("", response_model=PlaygroundListOut)
@@ -78,7 +78,13 @@ async def update_playground(
     service: PlaygroundService = Depends(get_playground_service),
 ) -> PlaygroundOut:
     try:
-        return await service.update_playground(encoded_id, user.id, body.title)
+        return await service.update_playground(
+            encoded_id,
+            user.id,
+            title=body.title,
+            tools=body.tools,
+            update_tools="tools" in body.model_fields_set,
+        )
     except PlaygroundError as exc:
         _raise_http_error(exc)
 
@@ -108,6 +114,7 @@ async def chat_multi(
             user.id,
             body.message,
             [(model.provider, model.model_name, model.reasoning_effort) for model in body.models],
+            body.tools,
         )
     except PlaygroundError as exc:
         _raise_http_error(exc)
@@ -133,6 +140,7 @@ async def chat_single(
             thread_encoded_id,
             user.id,
             body.message,
+            body.tools,
         )
     except PlaygroundError as exc:
         _raise_http_error(exc)

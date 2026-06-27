@@ -13,6 +13,7 @@ from playground.models.router import router as models_router
 from playground.models.service import sync_runtime_models
 from playground.runtime.client import AgentRuntimeClient
 from playground.sessions.router import router as playground_router
+from playground.tools.router import router as tools_router
 
 
 @asynccontextmanager
@@ -64,6 +65,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app.include_router(auth_router)
     app.include_router(models_router)
+    app.include_router(tools_router)
     app.include_router(playground_router)
 
     @app.get("/")

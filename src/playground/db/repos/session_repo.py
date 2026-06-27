@@ -22,9 +22,14 @@ class SessionRepo:
             async with self.db.session() as session:
                 yield session
 
-    async def create(self, user_id: int, title: str = "New Playground") -> PlaygroundSession:
+    async def create(
+        self,
+        user_id: int,
+        title: str = "New Playground",
+        tools: list[str] | None = None,
+    ) -> PlaygroundSession:
         async with self._session() as s:
-            sess = PlaygroundSession(user_id=user_id, title=title)
+            sess = PlaygroundSession(user_id=user_id, title=title, tools_json=tools)
             s.add(sess)
             await s.flush()
             return sess
@@ -83,6 +88,26 @@ class SessionRepo:
             if sess is None:
                 return None
             sess.title = title
+            await s.flush()
+            return sess
+
+    async def update_tools(
+        self,
+        session_id: int,
+        user_id: int,
+        tools: list[str] | None,
+    ) -> PlaygroundSession | None:
+        async with self._session() as s:
+            result = await s.execute(
+                select(PlaygroundSession).where(
+                    PlaygroundSession.id == session_id,
+                    PlaygroundSession.user_id == user_id,
+                )
+            )
+            sess = result.scalar_one_or_none()
+            if sess is None:
+                return None
+            sess.tools_json = tools
             await s.flush()
             return sess
 

@@ -20,9 +20,16 @@ from playground.sessions.service import (
 class FakeRuntime:
     def __init__(self) -> None:
         self.created: list[str] = []
+        self.created_tools: list[list[str] | None] = []
+        self.chat_tools: list[list[str] | None] = []
 
-    async def create_session(self, title: str = "New Session") -> str:
+    async def create_session(
+        self,
+        title: str = "New Session",
+        tools: list[str] | None = None,
+    ) -> str:
         self.created.append(title)
+        self.created_tools.append(tools)
         return f"runtime-{title}"
 
     async def chat_stream(
@@ -33,7 +40,9 @@ class FakeRuntime:
         provider: str | None = None,
         model: str | None = None,
         reasoning_effort: str | None = None,
+        tools: list[str] | None = None,
     ):
+        self.chat_tools.append(tools)
         yield {
             "type": "thinking_delta",
             "delta": "thinking",
@@ -78,7 +87,9 @@ class DoneOnlyThinkingRuntime(FakeRuntime):
         provider: str | None = None,
         model: str | None = None,
         reasoning_effort: str | None = None,
+        tools: list[str] | None = None,
     ):
+        self.chat_tools.append(tools)
         yield {"type": "text_delta", "delta": "done-only"}
         yield {
             "type": "done",
@@ -99,7 +110,9 @@ class VisualizationRuntime(FakeRuntime):
         provider: str | None = None,
         model: str | None = None,
         reasoning_effort: str | None = None,
+        tools: list[str] | None = None,
     ):
+        self.chat_tools.append(tools)
         yield {
             "type": "tool_start",
             "tool": "tool",
@@ -133,7 +146,9 @@ class MissingTtftRuntime(FakeRuntime):
         provider: str | None = None,
         model: str | None = None,
         reasoning_effort: str | None = None,
+        tools: list[str] | None = None,
     ):
+        self.chat_tools.append(tools)
         yield {"type": "text_delta", "delta": "hello"}
         yield {
             "type": "done",
@@ -154,7 +169,9 @@ class MarkupToolRuntime(FakeRuntime):
         provider: str | None = None,
         model: str | None = None,
         reasoning_effort: str | None = None,
+        tools: list[str] | None = None,
     ):
+        self.chat_tools.append(tools)
         yield {
             "type": "tool_start",
             "tool": (
@@ -271,12 +288,14 @@ async def test_multi_chat_creates_threads_only_for_valid_models(db: Database) ->
         user.id,
         "hello",
         [(model.provider, model.model_name, None)],
+        ["web_search"],
     )
 
     async with db.session() as session:
         threads = await ThreadRepo(session).get_by_session(playground.id)
 
     assert runtime.created == ["openai/gpt-test"]
+    assert runtime.created_tools == [["web_search"]]
     assert len(threads) == 1
     assert threads[0].runtime_session_id == "runtime-openai/gpt-test"
 
@@ -320,6 +339,7 @@ async def test_multi_chat_persists_user_and_assistant_messages(db: Database) -> 
         user.id,
         "hello",
         [(model.provider, model.model_name, "high")],
+        ["web_search"],
     )
     chunks = [chunk async for chunk in stream]
 
@@ -352,6 +372,7 @@ async def test_multi_chat_persists_user_and_assistant_messages(db: Database) -> 
     assert messages[4].usage_json["reasoning_tokens"] == 2
     assert messages[4].thinking_json["reasoning"] == "visible thought"
     assert messages[4].output_delta_count == 2
+    assert service.runtime.chat_tools == [["web_search"]]
 
 
 async def test_multi_chat_persists_messages_before_all_done(db: Database) -> None:
@@ -495,6 +516,7 @@ async def test_single_chat_adds_ttft_when_runtime_usage_omits_it(db: Database) -
         encode(thread_id),
         user.id,
         "hello",
+        ["web_search"],
     )
     chunks = [chunk async for chunk in stream]
 
@@ -506,6 +528,7 @@ async def test_single_chat_adds_ttft_when_runtime_usage_omits_it(db: Database) -
     assert any('"type": "thread_start"' in chunk for chunk in chunks)
     assert assistant.usage_json["perf"]["ttft_ms"] >= 0
     assert '"perf": {"ttft_ms":' in "".join(chunks)
+    assert service.runtime.chat_tools == [["web_search"]]
 
 
 def test_normalize_tool_name_extracts_markup_tool_label() -> None:
