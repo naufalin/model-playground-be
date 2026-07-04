@@ -13,8 +13,32 @@ from playground.sessions.service import (
     PlaygroundNotFoundError,
     PlaygroundService,
     _normalize_tool_name,
+    _tool_name,
     _tool_output_preview,
+    _tool_viz_html,
 )
+
+VIZ_HTML = "<!DOCTYPE html><html><body><div id='chart'></div></body></html>"
+
+
+def visualization_args() -> dict:
+    return {
+        "spec": {
+            "page_type": "chart",
+            "title": "Chart",
+            "subtitle": "",
+            "insights": [],
+            "metrics": [],
+            "charts": [
+                {
+                    "title": "Chart",
+                    "subtitle": "",
+                    "echarts_option_json": '{"series": [{"data": [1], "type": "bar"}]}',
+                }
+            ],
+            "tables": [],
+        }
+    }
 
 
 class FakeRuntime:
@@ -117,14 +141,49 @@ class VisualizationRuntime(FakeRuntime):
             "type": "tool_start",
             "tool": "tool",
             "call_id": "viz-1",
-            "args": {"chart_type": "bar"},
+            "args": visualization_args(),
         }
         yield {
             "type": "tool_end",
             "tool": "tool",
             "call_id": "viz-1",
             "output_preview": '{"html":"<!DOCTYPE html>"}',
-            "viz_html": "<!DOCTYPE html><html><body><div id='chart'></div></body></html>",
+            "viz_html": VIZ_HTML,
+        }
+        yield {"type": "text_delta", "delta": "Here is the chart."}
+        yield {
+            "type": "done",
+            "provider": provider,
+            "model": model,
+            "usage": {"total_tokens": 7},
+            "thinking": None,
+            "output_delta_count": 1,
+        }
+
+
+class VisualizationOutputFallbackRuntime(FakeRuntime):
+    async def chat_stream(
+        self,
+        session_id: str,
+        message: str,
+        *,
+        provider: str | None = None,
+        model: str | None = None,
+        reasoning_effort: str | None = None,
+        tools: list[str] | None = None,
+    ):
+        self.chat_tools.append(tools)
+        yield {
+            "type": "tool_start",
+            "tool": "tool",
+            "call_id": "viz-1",
+            "args": visualization_args(),
+        }
+        yield {
+            "type": "tool_end",
+            "tool": "tool",
+            "call_id": "viz-1",
+            "output": {"html": VIZ_HTML, "title": "Chart"},
         }
         yield {"type": "text_delta", "delta": "Here is the chart."}
         yield {
@@ -489,11 +548,40 @@ async def test_multi_chat_persists_visualization_html(db: Database) -> None:
     ]
 
     assert '"viz_html": "<!DOCTYPE html>' in "".join(chunks)
-    assert tool_messages[-1].tool_name == "tool"
-    assert tool_messages[-1].viz_html == (
-        "<!DOCTYPE html><html><body><div id='chart'></div></body></html>"
-    )
+    assert [message.tool_name for message in tool_messages] == [
+        "generate_visualization",
+        "generate_visualization",
+    ]
+    assert tool_messages[-1].viz_html == VIZ_HTML
     assert detail_tool_messages[-1].viz_html == tool_messages[-1].viz_html
+
+
+async def test_multi_chat_extracts_visualization_html_from_output_fallback(
+    db: Database,
+) -> None:
+    user = await create_user(db)
+    model = await create_model(db)
+    playground = await create_session(db, user.id)
+    service = PlaygroundService(db, VisualizationOutputFallbackRuntime())
+
+    stream = await service.stream_multi_chat(
+        encode(playground.id),
+        user.id,
+        "make a chart",
+        [(model.provider, model.model_name, None)],
+    )
+    chunks = [chunk async for chunk in stream]
+
+    async with db.session() as session:
+        threads = await ThreadRepo(session).get_by_session(playground.id)
+        tool_messages = [message for message in threads[0].messages if message.role == "tool"]
+
+    assert chunks[-1] == 'data: {"type": "all_done"}\n\n'
+    assert [message.tool_name for message in tool_messages] == [
+        "generate_visualization",
+        "generate_visualization",
+    ]
+    assert tool_messages[-1].viz_html == VIZ_HTML
 
 
 async def test_single_chat_adds_ttft_when_runtime_usage_omits_it(db: Database) -> None:
@@ -541,6 +629,19 @@ def test_normalize_tool_name_extracts_markup_tool_label() -> None:
     )
 
 
+def test_tool_name_infers_visualization_from_generic_spec_args() -> None:
+    assert (
+        _tool_name(
+            {
+                "type": "tool_start",
+                "tool": "tool",
+                "args": visualization_args(),
+            }
+        )
+        == "generate_visualization"
+    )
+
+
 def test_tool_output_preview_falls_back_for_old_runtime_events() -> None:
     assert (
         _tool_output_preview(
@@ -555,6 +656,34 @@ def test_tool_output_preview_truncates_long_values() -> None:
     preview = _tool_output_preview({"type": "tool_end", "output_preview": "x" * 600}, "tool")
 
     assert len(preview) == 500
+
+
+def test_tool_viz_html_falls_back_to_output_json() -> None:
+    assert (
+        _tool_viz_html(
+            {
+                "type": "tool_end",
+                "tool": "generate_visualization",
+                "output": {"html": VIZ_HTML, "title": "Chart"},
+            },
+            "generate_visualization",
+        )
+        == VIZ_HTML
+    )
+
+
+def test_tool_viz_html_falls_back_to_output_preview_json() -> None:
+    assert (
+        _tool_viz_html(
+            {
+                "type": "tool_end",
+                "tool": "generate_visualization",
+                "output_preview": json.dumps({"html": VIZ_HTML, "title": "Chart"}),
+            },
+            "generate_visualization",
+        )
+        == VIZ_HTML
+    )
 
 
 async def test_single_chat_emits_error_event_when_runtime_fails(db: Database) -> None:

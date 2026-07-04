@@ -473,6 +473,8 @@ def _request_options(
 
 TOOL_NAME_MAX_LENGTH = 100
 OUTPUT_PREVIEW_MAX_LENGTH = 500
+VISUALIZATION_TOOL_NAME = "generate_visualization"
+VISUALIZATION_PAGE_TYPES = {"dashboard", "report", "comparison", "chart"}
 
 
 def _bounded_text(value: str, max_length: int) -> str:
@@ -501,6 +503,58 @@ def _normalize_tool_name(raw_tool: Any) -> str:
     return _bounded_text(tool or "tool", TOOL_NAME_MAX_LENGTH)
 
 
+def _looks_like_visualization_args(args: Any) -> bool:
+    if not isinstance(args, dict):
+        return False
+
+    spec = args.get("spec")
+    return (
+        isinstance(spec, dict)
+        and spec.get("page_type") in VISUALIZATION_PAGE_TYPES
+        and isinstance(spec.get("title"), str)
+        and isinstance(spec.get("charts"), list)
+    )
+
+
+def _parse_tool_result(value: Any) -> dict[str, Any] | None:
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, str):
+        return None
+
+    try:
+        parsed = json.loads(value)
+    except (TypeError, json.JSONDecodeError):
+        return None
+
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _extract_html_from_tool_result(value: Any) -> str | None:
+    parsed = _parse_tool_result(value)
+    if parsed is None:
+        return None
+
+    html = parsed.get("html")
+    return html if isinstance(html, str) and html else None
+
+
+def _is_visualization_event(event: dict[str, Any], tool_name: str) -> bool:
+    return (
+        tool_name == VISUALIZATION_TOOL_NAME
+        or _looks_like_visualization_args(event.get("args"))
+        or _extract_html_from_tool_result(event.get("output")) is not None
+        or _extract_html_from_tool_result(event.get("output_preview")) is not None
+    )
+
+
+def _tool_name(event: dict[str, Any]) -> str:
+    tool_name = _normalize_tool_name(event.get("tool"))
+    if tool_name == "tool" and _is_visualization_event(event, tool_name):
+        return VISUALIZATION_TOOL_NAME
+    return tool_name
+
+
 def _tool_output_preview(event: dict[str, Any], tool_name: str) -> str:
     preview = event.get("output_preview")
     if event.get("type") == "tool_end" and isinstance(preview, str) and preview:
@@ -511,9 +565,31 @@ def _tool_output_preview(event: dict[str, Any], tool_name: str) -> str:
 def _tool_viz_html(event: dict[str, Any], tool_name: str) -> str | None:
     if event.get("type") != "tool_end":
         return None
+
     viz_html = event.get("viz_html")
     if isinstance(viz_html, str) and viz_html:
         return viz_html
+
+    if not _is_visualization_event(event, tool_name):
+        return None
+
+    return _extract_html_from_tool_result(event.get("output")) or _extract_html_from_tool_result(
+        event.get("output_preview")
+    )
+
+
+def _tool_start_args_for_end_event(
+    timeline: list[dict[str, Any]],
+    event: dict[str, Any],
+) -> dict[str, Any] | None:
+    call_id = event.get("call_id")
+    if not call_id:
+        return None
+
+    for previous in reversed(timeline):
+        if previous.get("type") == "tool_start" and previous.get("call_id") == call_id:
+            args = previous.get("args")
+            return args if isinstance(args, dict) else None
     return None
 
 
@@ -550,7 +626,12 @@ def _append_timeline_event(timeline: list[dict[str, Any]], event: dict[str, Any]
         return
 
     if event.get("type") in {"tool_start", "tool_end"}:
-        timeline.append(event)
+        timeline_event = dict(event)
+        if event.get("type") == "tool_end" and "args" not in timeline_event:
+            start_args = _tool_start_args_for_end_event(timeline, event)
+            if start_args is not None:
+                timeline_event["args"] = start_args
+        timeline.append(timeline_event)
 
 
 async def _persist_timeline_event(
@@ -567,7 +648,7 @@ async def _persist_timeline_event(
         )
         return
 
-    tool_name = _normalize_tool_name(event.get("tool"))
+    tool_name = _tool_name(event)
     is_start = event.get("type") == "tool_start"
     output_preview = _tool_output_preview(event, tool_name)
     viz_html = _tool_viz_html(event, tool_name)
