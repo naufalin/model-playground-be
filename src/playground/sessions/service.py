@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import json
-import time
 from collections.abc import AsyncGenerator
-from typing import Any
 
 from playground.db.connection import Database
 from playground.db.models import ModelThread
@@ -12,6 +10,12 @@ from playground.db.repos.session_repo import SessionRepo
 from playground.db.repos.thread_repo import ThreadRepo
 from playground.ids import decode, encode
 from playground.runtime.client import AgentRuntimeClient
+from playground.sessions.chat_capture import (
+    CapturedMessage,
+    ChatThreadCapture,
+    ChatThreadInfo,
+    _request_options,
+)
 from playground.sessions.fanout import fanout_chat
 from playground.sessions.schemas import (
     MessageOut,
@@ -189,85 +193,41 @@ class PlaygroundService:
         threads = await self._prepare_multi_chat(session_id, user_id, message, models, tools)
 
         async def _stream() -> AsyncGenerator[str, None]:
-            thread_texts: dict[int, str] = {thread.id: "" for thread, _ in threads}
-            thread_done: dict[int, dict[str, Any]] = {}
-            timeline_events: dict[int, list[dict[str, Any]]] = {
-                thread.id: [] for thread, _ in threads
-            }
-            saw_all_done = False
-            request_options = {
-                thread.id: _request_options(thread.provider, thread.model_name, reasoning_effort)
+            captures = {
+                encode(thread.id): ChatThreadCapture(
+                    ChatThreadInfo(
+                        id=thread.id,
+                        encoded_id=encode(thread.id),
+                        provider=thread.provider,
+                        model_name=thread.model_name,
+                        request_options=_request_options(
+                            thread.provider,
+                            thread.model_name,
+                            reasoning_effort,
+                        ),
+                    )
+                )
                 for thread, reasoning_effort in threads
             }
 
-            async for chunk in fanout_chat(self.runtime, threads, message, tools):
-                should_yield = True
-                try:
-                    data = json.loads(chunk.removeprefix("data: ").strip())
-                    if data.get("type") == "all_done":
-                        saw_all_done = True
-                        should_yield = False
-                    tid_encoded = data.get("thread_id")
-                    if tid_encoded and data.get("type") == "text_delta":
-                        tid = decode(tid_encoded)
-                        thread_texts[tid] += data.get("delta", "")
-                    if tid_encoded and data.get("type") == "thread_done":
-                        tid = decode(tid_encoded)
-                        thread_done[tid] = data
-                    if tid_encoded and data.get("type") in {
-                        "thinking_delta",
-                        "tool_start",
-                        "tool_end",
-                    }:
-                        tid = decode(tid_encoded)
-                        _append_timeline_event(timeline_events.setdefault(tid, []), data)
-                except (json.JSONDecodeError, ValueError):
-                    pass
-                if should_yield:
-                    yield chunk
+            async for event in fanout_chat(self.runtime, threads, message, tools):
+                capture = captures.get(event.get("thread_id"))
+                if capture is None or event.get("type") == "thread_start":
+                    yield _sse(event)
+                    continue
+
+                observed = capture.observe(event)
+                if event.get("type") == "done":
+                    yield _sse(capture.thread_done_event())
+                elif observed is not None:
+                    yield _sse(observed)
 
             async with self.db.session() as session:
                 thread_repo = ThreadRepo(session)
-                for thread, _reasoning_effort in threads:
-                    done = thread_done.get(thread.id, {})
-                    timeline = timeline_events.get(thread.id, [])
-                    has_thinking = any(event.get("type") == "thinking" for event in timeline)
-                    if not has_thinking and done.get("thinking"):
-                        thinking_text = _thinking_text(
-                            done.get("thinking"),
-                            done.get("provider") or thread.provider,
-                        )
-                        if thinking_text:
-                            timeline.append(
-                                {
-                                    "type": "thinking",
-                                    "kind": _thinking_kind(done.get("provider") or thread.provider),
-                                    "content": thinking_text,
-                                    "thinking": done.get("thinking"),
-                                }
-                            )
+                for capture in captures.values():
+                    await _persist_captured_messages(thread_repo, capture.thread.id, capture)
 
-                    for event in timeline:
-                        await _persist_timeline_event(thread_repo, thread.id, event)
-
-                    content = thread_texts.get(thread.id, "")
-                    content = done.get("content") or content
-                    if content:
-                        await thread_repo.add_message(
-                            thread.id,
-                            role="assistant",
-                            content=content,
-                            latency_ms=done.get("latency_ms"),
-                            provider=done.get("provider"),
-                            model=done.get("model"),
-                            usage_json=done.get("usage"),
-                            thinking_json=done.get("thinking"),
-                            request_options_json=request_options.get(thread.id),
-                            output_delta_count=done.get("output_delta_count"),
-                        )
-
-            if saw_all_done:
-                yield f"data: {json.dumps({'type': 'all_done'})}\n\n"
+            yield _sse({"type": "all_done"})
 
         return _stream()
 
@@ -285,20 +245,16 @@ class PlaygroundService:
 
         async def _stream() -> AsyncGenerator[str, None]:
             thread_id_enc = encode(thread_id)
-            full_text = ""
-            latency_ms = 0
-            start_event = {
-                "type": "thread_start",
-                "thread_id": thread_id_enc,
-                "provider": thread.provider,
-                "model": thread.model_name,
-            }
-            yield f"data: {json.dumps(start_event)}\n\n"
-            start = time.monotonic()
-            first_token_ms: int | None = None
-            done_event: dict[str, Any] | None = None
-            timeline_events: list[dict[str, Any]] = []
-            request_options = _request_options(thread.provider, thread.model_name, None)
+            capture = ChatThreadCapture(
+                ChatThreadInfo(
+                    id=thread_id,
+                    encoded_id=thread_id_enc,
+                    provider=thread.provider,
+                    model_name=thread.model_name,
+                    request_options=_request_options(thread.provider, thread.model_name, None),
+                )
+            )
+            yield _sse(capture.start_event())
             try:
                 async for event in self.runtime.chat_stream(
                     thread.runtime_session_id,
@@ -307,77 +263,19 @@ class PlaygroundService:
                     model=thread.model_name,
                     tools=tools,
                 ):
-                    if event.get("type") == "done":
-                        done_event = event
-                        continue
                     event["thread_id"] = thread_id_enc
-                    if event.get("type") == "text_delta":
-                        if first_token_ms is None and event.get("delta", "").strip():
-                            first_token_ms = int((time.monotonic() - start) * 1000)
-                        full_text += event.get("delta", "")
-                    if event.get("type") in {"thinking_delta", "tool_start", "tool_end"}:
-                        _append_timeline_event(timeline_events, event)
-                    yield f"data: {json.dumps(event)}\n\n"
+                    observed = capture.observe(event)
+                    if observed is not None:
+                        yield _sse(observed)
             except Exception as exc:
-                error_event = {
-                    "type": "error",
-                    "thread_id": thread_id_enc,
-                    "error": str(exc),
-                }
-                yield f"data: {json.dumps(error_event)}\n\n"
-            latency_ms = int((time.monotonic() - start) * 1000)
-            done = done_event or {}
-            content = done.get("content") or full_text
-            usage = _usage_with_ttft(done.get("usage"), first_token_ms)
+                yield _sse(capture.error_event(exc))
 
-            has_thinking = any(event.get("type") == "thinking" for event in timeline_events)
-            if not has_thinking and done.get("thinking"):
-                thinking_text = _thinking_text(
-                    done.get("thinking"),
-                    done.get("provider") or thread.provider,
-                )
-                if thinking_text:
-                    timeline_events.append(
-                        {
-                            "type": "thinking",
-                            "kind": _thinking_kind(done.get("provider") or thread.provider),
-                            "content": thinking_text,
-                            "thinking": done.get("thinking"),
-                        }
-                    )
+            async with self.db.session() as session:
+                thread_repo = ThreadRepo(session)
+                await _persist_captured_messages(thread_repo, thread_id, capture)
 
-            if content or timeline_events:
-                async with self.db.session() as session:
-                    thread_repo = ThreadRepo(session)
-                    for event in timeline_events:
-                        await _persist_timeline_event(thread_repo, thread_id, event)
-                    if content:
-                        await thread_repo.add_message(
-                            thread_id,
-                            role="assistant",
-                            content=content,
-                            latency_ms=latency_ms,
-                            provider=done.get("provider") or thread.provider,
-                            model=done.get("model") or thread.model_name,
-                            usage_json=usage,
-                            thinking_json=done.get("thinking"),
-                            request_options_json=request_options,
-                            output_delta_count=done.get("output_delta_count"),
-                        )
-
-            done_event = {
-                "type": "thread_done",
-                "thread_id": thread_id_enc,
-                "latency_ms": latency_ms,
-                "content": content,
-                "provider": done.get("provider") or thread.provider,
-                "model": done.get("model") or thread.model_name,
-                "usage": usage,
-                "thinking": done.get("thinking"),
-                "output_delta_count": done.get("output_delta_count"),
-            }
-            yield f"data: {json.dumps(done_event)}\n\n"
-            yield f"data: {json.dumps({'type': 'all_done'})}\n\n"
+            yield _sse(capture.thread_done_event())
+            yield _sse({"type": "all_done"})
 
         return _stream()
 
@@ -460,226 +358,38 @@ class PlaygroundService:
             return thread
 
 
-def _request_options(
-    provider: str,
-    model_name: str,
-    reasoning_effort: str | None,
-) -> dict[str, str]:
-    options = {"provider": provider, "model": model_name}
-    if reasoning_effort:
-        options["reasoning_effort"] = reasoning_effort
-    return options
+def _sse(event: dict) -> str:
+    return f"data: {json.dumps(event)}\n\n"
 
 
-TOOL_NAME_MAX_LENGTH = 100
-OUTPUT_PREVIEW_MAX_LENGTH = 500
-VISUALIZATION_TOOL_NAME = "generate_visualization"
-VISUALIZATION_PAGE_TYPES = {"dashboard", "report", "comparison", "chart"}
-
-
-def _bounded_text(value: str, max_length: int) -> str:
-    return value if len(value) <= max_length else value[:max_length]
-
-
-def _normalize_tool_name(raw_tool: Any) -> str:
-    if not isinstance(raw_tool, str):
-        return "tool"
-
-    tool = raw_tool.strip()
-    if not tool:
-        return "tool"
-
-    if "<tool_call>" in tool:
-        tool = tool.split("<tool_call>", 1)[0]
-    if tool.endswith(")") and "(" in tool:
-        inner = tool.rsplit("(", 1)[1][:-1].strip()
-        if inner:
-            tool = inner
-    if tool.endswith("_args"):
-        tool = tool[: -len("_args")]
-    if tool.startswith("_"):
-        tool = tool[1:]
-
-    return _bounded_text(tool or "tool", TOOL_NAME_MAX_LENGTH)
-
-
-def _looks_like_visualization_args(args: Any) -> bool:
-    if not isinstance(args, dict):
-        return False
-
-    spec = args.get("spec")
-    return (
-        isinstance(spec, dict)
-        and spec.get("page_type") in VISUALIZATION_PAGE_TYPES
-        and isinstance(spec.get("title"), str)
-        and isinstance(spec.get("charts"), list)
-    )
-
-
-def _parse_tool_result(value: Any) -> dict[str, Any] | None:
-    if isinstance(value, dict):
-        return value
-    if not isinstance(value, str):
-        return None
-
-    try:
-        parsed = json.loads(value)
-    except (TypeError, json.JSONDecodeError):
-        return None
-
-    return parsed if isinstance(parsed, dict) else None
-
-
-def _extract_html_from_tool_result(value: Any) -> str | None:
-    parsed = _parse_tool_result(value)
-    if parsed is None:
-        return None
-
-    html = parsed.get("html")
-    return html if isinstance(html, str) and html else None
-
-
-def _is_visualization_event(event: dict[str, Any], tool_name: str) -> bool:
-    return (
-        tool_name == VISUALIZATION_TOOL_NAME
-        or _looks_like_visualization_args(event.get("args"))
-        or _extract_html_from_tool_result(event.get("output")) is not None
-        or _extract_html_from_tool_result(event.get("output_preview")) is not None
-    )
-
-
-def _tool_name(event: dict[str, Any]) -> str:
-    tool_name = _normalize_tool_name(event.get("tool"))
-    if tool_name == "tool" and _is_visualization_event(event, tool_name):
-        return VISUALIZATION_TOOL_NAME
-    return tool_name
-
-
-def _tool_output_preview(event: dict[str, Any], tool_name: str) -> str:
-    preview = event.get("output_preview")
-    if event.get("type") == "tool_end" and isinstance(preview, str) and preview:
-        return _bounded_text(preview, OUTPUT_PREVIEW_MAX_LENGTH)
-    return _bounded_text(f"{event.get('type')}:{tool_name}", OUTPUT_PREVIEW_MAX_LENGTH)
-
-
-def _tool_viz_html(event: dict[str, Any], tool_name: str) -> str | None:
-    if event.get("type") != "tool_end":
-        return None
-
-    viz_html = event.get("viz_html")
-    if isinstance(viz_html, str) and viz_html:
-        return viz_html
-
-    if not _is_visualization_event(event, tool_name):
-        return None
-
-    return _extract_html_from_tool_result(event.get("output")) or _extract_html_from_tool_result(
-        event.get("output_preview")
-    )
-
-
-def _tool_start_args_for_end_event(
-    timeline: list[dict[str, Any]],
-    event: dict[str, Any],
-) -> dict[str, Any] | None:
-    call_id = event.get("call_id")
-    if not call_id:
-        return None
-
-    for previous in reversed(timeline):
-        if previous.get("type") == "tool_start" and previous.get("call_id") == call_id:
-            args = previous.get("args")
-            return args if isinstance(args, dict) else None
-    return None
-
-
-def _usage_with_ttft(usage: dict[str, Any] | None, ttft_ms: int | None) -> dict[str, Any] | None:
-    if ttft_ms is None:
-        return usage
-
-    next_usage = dict(usage or {})
-    perf = next_usage.get("perf")
-    next_perf = dict(perf) if isinstance(perf, dict) else {}
-    next_perf.setdefault("ttft_ms", ttft_ms)
-    next_usage["perf"] = next_perf
-    return next_usage
-
-
-def _append_timeline_event(timeline: list[dict[str, Any]], event: dict[str, Any]) -> None:
-    if event.get("type") == "thinking_delta":
-        delta = event.get("delta")
-        if not isinstance(delta, str) or not delta:
-            return
-        kind = event.get("kind") if isinstance(event.get("kind"), str) else "reasoning"
-        if timeline and timeline[-1].get("type") == "thinking" and timeline[-1].get("kind") == kind:
-            timeline[-1]["content"] = f"{timeline[-1].get('content', '')}{delta}"
-            timeline[-1]["thinking"] = {kind: timeline[-1]["content"]}
-            return
-        timeline.append(
-            {
-                "type": "thinking",
-                "kind": kind,
-                "content": delta,
-                "thinking": {kind: delta},
-            }
-        )
-        return
-
-    if event.get("type") in {"tool_start", "tool_end"}:
-        timeline_event = dict(event)
-        if event.get("type") == "tool_end" and "args" not in timeline_event:
-            start_args = _tool_start_args_for_end_event(timeline, event)
-            if start_args is not None:
-                timeline_event["args"] = start_args
-        timeline.append(timeline_event)
-
-
-async def _persist_timeline_event(
+async def _persist_captured_messages(
     thread_repo: ThreadRepo,
     thread_id: int,
-    event: dict[str, Any],
+    capture: ChatThreadCapture,
 ) -> None:
-    if event.get("type") == "thinking":
-        await thread_repo.add_message(
-            thread_id,
-            role="thinking",
-            content=str(event.get("content") or ""),
-            thinking_json=event.get("thinking"),
-        )
-        return
+    for message in capture.captured_messages():
+        await _persist_captured_message(thread_repo, thread_id, message)
 
-    tool_name = _tool_name(event)
-    is_start = event.get("type") == "tool_start"
-    output_preview = _tool_output_preview(event, tool_name)
-    viz_html = _tool_viz_html(event, tool_name)
+
+async def _persist_captured_message(
+    thread_repo: ThreadRepo,
+    thread_id: int,
+    message: CapturedMessage,
+) -> None:
     await thread_repo.add_message(
         thread_id,
-        role="tool",
-        content=f"[{'calling' if is_start else 'finished'} {tool_name}]",
-        tool_name=tool_name,
-        tool_call_id=event.get("call_id"),
-        tool_input=event.get("args") if is_start else None,
-        output_preview=output_preview,
-        viz_html=viz_html,
+        role=message.role,
+        content=message.content,
+        latency_ms=message.latency_ms,
+        tool_name=message.tool_name,
+        tool_call_id=message.tool_call_id,
+        tool_input=message.tool_input,
+        output_preview=message.output_preview,
+        viz_html=message.viz_html,
+        provider=message.provider,
+        model=message.model,
+        usage_json=message.usage_json,
+        thinking_json=message.thinking_json,
+        request_options_json=message.request_options_json,
+        output_delta_count=message.output_delta_count,
     )
-
-
-def _thinking_kind(provider: str | None) -> str:
-    return "summary" if provider == "openai" else "reasoning"
-
-
-def _thinking_text(thinking: Any, provider: str | None) -> str:
-    if isinstance(thinking, str):
-        return thinking
-    if not isinstance(thinking, dict):
-        return ""
-
-    preferred = _thinking_kind(provider)
-    value = thinking.get(preferred)
-    if isinstance(value, str) and value:
-        return value
-
-    fallback = thinking.get("reasoning") or thinking.get("summary")
-    if isinstance(fallback, str):
-        return fallback
-    return ""
