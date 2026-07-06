@@ -5,6 +5,7 @@ from typing import Any
 import httpx
 from fastapi import HTTPException, status
 
+from playground.db.connection import Database
 from playground.db.models import LlmModel
 from playground.db.repos.model_repo import ModelRepo
 from playground.models.schemas import ModelCreate
@@ -60,25 +61,27 @@ def _raise_runtime_error(exc: httpx.HTTPStatusError) -> None:
     ) from exc
 
 
-async def sync_runtime_models(repo: ModelRepo, runtime: AgentRuntimeClient) -> tuple[int, int]:
+async def sync_runtime_models(db: Database, runtime: AgentRuntimeClient) -> tuple[int, int]:
     """Sync model metadata from agent runtime into the local registry."""
     payload = await runtime.list_models()
     synced = 0
     seen_models: set[tuple[str, str]] = set()
-    for provider_key, model in _iter_runtime_models(payload):
-        values = _runtime_model_values(provider_key, model)
-        if values is None:
-            continue
-        await repo.upsert_runtime_model(**values)
-        seen_models.add((values["provider"], values["model_name"]))
-        synced += 1
-    deactivated = await repo.deactivate_missing_runtime_models(seen_models)
+    async with db.session() as session:
+        repo = ModelRepo(session)
+        for provider_key, model in _iter_runtime_models(payload):
+            values = _runtime_model_values(provider_key, model)
+            if values is None:
+                continue
+            await repo.upsert_runtime_model(**values)
+            seen_models.add((values["provider"], values["model_name"]))
+            synced += 1
+        deactivated = await repo.deactivate_missing_runtime_models(seen_models)
     return synced, deactivated
 
 
 async def create_runtime_model(
     body: ModelCreate,
-    repo: ModelRepo,
+    db: Database,
     runtime: AgentRuntimeClient,
 ) -> LlmModel:
     """Create a runtime model and mirror it into the local registry."""
@@ -105,4 +108,5 @@ async def create_runtime_model(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Agent runtime returned an invalid model payload",
         )
-    return await repo.upsert_runtime_model(**values)
+    async with db.session() as session:
+        return await ModelRepo(session).upsert_runtime_model(**values)

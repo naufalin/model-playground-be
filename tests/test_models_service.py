@@ -33,21 +33,41 @@ class FakeRuntime:
         }
 
 
-async def make_repo() -> tuple[Database, ModelRepo]:
+async def make_db() -> Database:
     db = Database("sqlite+aiosqlite:///:memory:")
     db.connect()
     assert db.engine is not None
     async with db.engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-    return db, ModelRepo(db)
+    return db
+
+
+async def list_active_models(db: Database) -> list[LlmModel]:
+    async with db.session() as session:
+        return await ModelRepo(session).list_active()
+
+
+async def get_model(
+    db: Database,
+    provider: str,
+    model_name: str,
+    *,
+    active_only: bool = True,
+) -> LlmModel | None:
+    async with db.session() as session:
+        return await ModelRepo(session).get_by_provider_model(
+            provider,
+            model_name,
+            active_only=active_only,
+        )
 
 
 async def test_sync_runtime_models_upserts_enriched_metadata() -> None:
-    db, repo = await make_repo()
+    db = await make_db()
 
     try:
-        synced, deactivated = await sync_runtime_models(repo, FakeRuntime())
-        models = await repo.list_active()
+        synced, deactivated = await sync_runtime_models(db, FakeRuntime())
+        models = await list_active_models(db)
     finally:
         await db.disconnect()
 
@@ -63,7 +83,7 @@ async def test_sync_runtime_models_upserts_enriched_metadata() -> None:
 
 
 async def test_sync_runtime_models_deactivates_missing_local_models() -> None:
-    db, repo = await make_repo()
+    db = await make_db()
     try:
         async with db.session() as session:
             session.add_all(
@@ -83,9 +103,9 @@ async def test_sync_runtime_models_deactivates_missing_local_models() -> None:
                 ]
             )
 
-        synced, deactivated = await sync_runtime_models(repo, FakeRuntime())
-        active_models = await repo.list_active()
-        legacy = await repo.get_by_provider_model("openai", "legacy-model", active_only=False)
+        synced, deactivated = await sync_runtime_models(db, FakeRuntime())
+        active_models = await list_active_models(db)
+        legacy = await get_model(db, "openai", "legacy-model", active_only=False)
     finally:
         await db.disconnect()
 
@@ -105,11 +125,11 @@ async def test_sync_runtime_models_hides_runtime_disabled_models() -> None:
             payload["openrouter"]["models"][0]["enabled"] = False
             return payload
 
-    db, repo = await make_repo()
+    db = await make_db()
     try:
-        synced, deactivated = await sync_runtime_models(repo, DisabledRuntime())
-        models = await repo.list_active()
-        disabled = await repo.get_by_provider_model("openrouter", "vendor/model", active_only=False)
+        synced, deactivated = await sync_runtime_models(db, DisabledRuntime())
+        models = await list_active_models(db)
+        disabled = await get_model(db, "openrouter", "vendor/model", active_only=False)
     finally:
         await db.disconnect()
 
@@ -138,7 +158,7 @@ async def test_create_runtime_model_proxies_runtime_and_upserts_local_model() ->
                 "config": {"tier": "test"},
             }
 
-    db, repo = await make_repo()
+    db = await make_db()
     runtime = CreateRuntime()
     try:
         model = await create_runtime_model(
@@ -150,7 +170,7 @@ async def test_create_runtime_model_proxies_runtime_and_upserts_local_model() ->
                 sort_order=80,
                 config={"tier": "test"},
             ),
-            repo,
+            db,
             runtime,
         )
     finally:
@@ -181,12 +201,12 @@ async def test_create_runtime_model_maps_runtime_errors(
             response = httpx.Response(runtime_status, json={"detail": "runtime failed"})
             raise httpx.HTTPStatusError("error", request=request, response=response)
 
-    db, repo = await make_repo()
+    db = await make_db()
     try:
         with pytest.raises(HTTPException) as exc:
             await create_runtime_model(
                 ModelCreate(provider="openrouter", model_id="vendor/new", name="Vendor New"),
-                repo,
+                db,
                 ErrorRuntime(),
             )
     finally:
@@ -202,12 +222,12 @@ async def test_create_runtime_model_maps_runtime_request_errors() -> None:
             request = httpx.Request("POST", "http://runtime/models")
             raise httpx.ConnectError("unreachable", request=request)
 
-    db, repo = await make_repo()
+    db = await make_db()
     try:
         with pytest.raises(HTTPException) as exc:
             await create_runtime_model(
                 ModelCreate(provider="openrouter", model_id="vendor/new", name="Vendor New"),
-                repo,
+                db,
                 ErrorRuntime(),
             )
     finally:

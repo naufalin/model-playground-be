@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncGenerator
+from dataclasses import dataclass
 
 from playground.db.connection import Database
 from playground.db.models import ModelThread
@@ -26,6 +27,15 @@ from playground.sessions.schemas import (
 )
 
 ModelSelection = tuple[str, str, str | None]
+
+
+@dataclass(frozen=True)
+class PreparedModelSelection:
+    provider: str
+    model_name: str
+    reasoning_effort: str | None
+    model_id: int | None
+    thread: ModelThread | None
 
 
 class PlaygroundError(Exception):
@@ -296,7 +306,7 @@ class PlaygroundService:
             if playground is None:
                 raise PlaygroundNotFoundError("Playground not found")
 
-            threads = []
+            prepared: list[PreparedModelSelection] = []
             for provider, model_name, reasoning_effort in models:
                 model = await model_repo.get_by_provider_model(provider, model_name)
                 if model is None:
@@ -307,19 +317,48 @@ class PlaygroundService:
                     provider,
                     model_name,
                 )
-                if thread is None:
-                    runtime_session_id = await self.runtime.create_session(
-                        title=f"{provider}/{model_name}",
-                        tools=tools,
-                    )
-                    thread = await thread_repo.create(
-                        playground_session_id=session_id,
+                prepared.append(
+                    PreparedModelSelection(
                         provider=provider,
                         model_name=model_name,
-                        runtime_session_id=runtime_session_id,
+                        reasoning_effort=reasoning_effort,
                         model_id=model.id,
+                        thread=thread,
                     )
-                threads.append((thread, reasoning_effort))
+                )
+
+        runtime_session_ids: dict[tuple[str, str], str] = {}
+        for item in prepared:
+            if item.thread is not None:
+                continue
+            key = (item.provider, item.model_name)
+            if key not in runtime_session_ids:
+                runtime_session_ids[key] = await self.runtime.create_session(
+                    title=f"{item.provider}/{item.model_name}",
+                    tools=tools,
+                )
+
+        async with self.db.session() as session:
+            thread_repo = ThreadRepo(session)
+            threads: list[tuple[ModelThread, str | None]] = []
+
+            for item in prepared:
+                thread = item.thread
+                if thread is None:
+                    thread = await thread_repo.get_by_session_and_model(
+                        session_id,
+                        item.provider,
+                        item.model_name,
+                    )
+                if thread is None:
+                    thread = await thread_repo.create(
+                        playground_session_id=session_id,
+                        provider=item.provider,
+                        model_name=item.model_name,
+                        runtime_session_id=runtime_session_ids[(item.provider, item.model_name)],
+                        model_id=item.model_id,
+                    )
+                threads.append((thread, item.reasoning_effort))
 
             for thread, reasoning_effort in threads:
                 await thread_repo.add_message(

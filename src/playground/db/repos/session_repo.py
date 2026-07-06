@@ -1,26 +1,14 @@
 """Playground session repository — CRUD scoped to user."""
 
-from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
-
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from playground.db.connection import Database
 from playground.db.models import PlaygroundSession
 
 
 class SessionRepo:
-    def __init__(self, db: Database | AsyncSession):
-        self.db = db
-
-    @asynccontextmanager
-    async def _session(self) -> AsyncGenerator[AsyncSession]:
-        if isinstance(self.db, AsyncSession):
-            yield self.db
-        else:
-            async with self.db.session() as session:
-                yield session
+    def __init__(self, session: AsyncSession):
+        self.session = session
 
     async def create(
         self,
@@ -28,48 +16,43 @@ class SessionRepo:
         title: str = "New Playground",
         tools: list[str] | None = None,
     ) -> PlaygroundSession:
-        async with self._session() as s:
-            sess = PlaygroundSession(user_id=user_id, title=title, tools_json=tools)
-            s.add(sess)
-            await s.flush()
-            return sess
+        sess = PlaygroundSession(user_id=user_id, title=title, tools_json=tools)
+        self.session.add(sess)
+        await self.session.flush()
+        return sess
 
     async def list_by_user(
         self, user_id: int, limit: int = 20, offset: int = 0
     ) -> list[PlaygroundSession]:
-        async with self._session() as s:
-            result = await s.execute(
-                select(PlaygroundSession)
-                .where(PlaygroundSession.user_id == user_id)
-                .order_by(PlaygroundSession.updated_at.desc())
-                .limit(limit)
-                .offset(offset)
-            )
-            return list(result.scalars().all())
+        result = await self.session.execute(
+            select(PlaygroundSession)
+            .where(PlaygroundSession.user_id == user_id)
+            .order_by(PlaygroundSession.updated_at.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+        return list(result.scalars().all())
 
     async def count_by_user(self, user_id: int) -> int:
-        async with self._session() as s:
-            result = await s.execute(
-                select(func.count()).select_from(PlaygroundSession).where(
-                    PlaygroundSession.user_id == user_id
-                )
+        result = await self.session.execute(
+            select(func.count()).select_from(PlaygroundSession).where(
+                PlaygroundSession.user_id == user_id
             )
-            return result.scalar_one()
+        )
+        return result.scalar_one()
 
     async def get(self, session_id: int) -> PlaygroundSession | None:
-        async with self._session() as s:
-            return await s.get(PlaygroundSession, session_id)
+        return await self.session.get(PlaygroundSession, session_id)
 
     async def get_if_owner(self, session_id: int, user_id: int) -> PlaygroundSession | None:
         """Return session only if it belongs to the user."""
-        async with self._session() as s:
-            result = await s.execute(
-                select(PlaygroundSession).where(
-                    PlaygroundSession.id == session_id,
-                    PlaygroundSession.user_id == user_id,
-                )
+        result = await self.session.execute(
+            select(PlaygroundSession).where(
+                PlaygroundSession.id == session_id,
+                PlaygroundSession.user_id == user_id,
             )
-            return result.scalar_one_or_none()
+        )
+        return result.scalar_one_or_none()
 
     async def update_title(
         self,
@@ -77,19 +60,18 @@ class SessionRepo:
         user_id: int,
         title: str,
     ) -> PlaygroundSession | None:
-        async with self._session() as s:
-            result = await s.execute(
-                select(PlaygroundSession).where(
-                    PlaygroundSession.id == session_id,
-                    PlaygroundSession.user_id == user_id,
-                )
+        result = await self.session.execute(
+            select(PlaygroundSession).where(
+                PlaygroundSession.id == session_id,
+                PlaygroundSession.user_id == user_id,
             )
-            sess = result.scalar_one_or_none()
-            if sess is None:
-                return None
-            sess.title = title
-            await s.flush()
-            return sess
+        )
+        sess = result.scalar_one_or_none()
+        if sess is None:
+            return None
+        sess.title = title
+        await self.session.flush()
+        return sess
 
     async def update_tools(
         self,
@@ -97,22 +79,20 @@ class SessionRepo:
         user_id: int,
         tools: list[str] | None,
     ) -> PlaygroundSession | None:
-        async with self._session() as s:
-            result = await s.execute(
-                select(PlaygroundSession).where(
-                    PlaygroundSession.id == session_id,
-                    PlaygroundSession.user_id == user_id,
-                )
+        result = await self.session.execute(
+            select(PlaygroundSession).where(
+                PlaygroundSession.id == session_id,
+                PlaygroundSession.user_id == user_id,
             )
-            sess = result.scalar_one_or_none()
-            if sess is None:
-                return None
-            sess.tools_json = tools
-            await s.flush()
-            return sess
+        )
+        sess = result.scalar_one_or_none()
+        if sess is None:
+            return None
+        sess.tools_json = tools
+        await self.session.flush()
+        return sess
 
     async def delete(self, session_id: int) -> None:
-        async with self._session() as s:
-            sess = await s.get(PlaygroundSession, session_id)
-            if sess:
-                await s.delete(sess)
+        sess = await self.session.get(PlaygroundSession, session_id)
+        if sess:
+            await self.session.delete(sess)

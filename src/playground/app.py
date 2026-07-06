@@ -27,15 +27,15 @@ async def lifespan(app: FastAPI):
     runtime_client = AgentRuntimeClient(base_url=settings.agent_runtime_url)
     app.state.runtime_client = runtime_client
 
-    model_repo = ModelRepo(db)
     try:
-        await sync_runtime_models(model_repo, runtime_client)
+        await sync_runtime_models(db, runtime_client)
     except Exception as exc:  # noqa: BLE001
         import logging
 
         logging.warning("Could not sync runtime models: %s", exc)
 
-    models = await model_repo.list_active()
+    async with db.session() as session:
+        models = await ModelRepo(session).list_active()
     if not models:
         import logging
 

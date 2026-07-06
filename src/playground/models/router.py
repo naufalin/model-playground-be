@@ -4,9 +4,10 @@ from fastapi import APIRouter, Depends
 
 import playground.ids as ids
 from playground.auth.deps import get_current_user
+from playground.db.connection import Database
 from playground.db.models import User
 from playground.db.repos.model_repo import ModelRepo
-from playground.deps import get_model_repo, get_runtime_client
+from playground.deps import get_db, get_runtime_client
 from playground.models.schemas import ModelCreate, ModelOut, ModelsResponse, ModelsSyncResponse
 from playground.models.service import create_runtime_model, sync_runtime_models
 from playground.runtime.client import AgentRuntimeClient
@@ -30,9 +31,10 @@ def _model_out(model) -> ModelOut:  # noqa: ANN001
 @router.get("/models", response_model=ModelsResponse)
 async def list_models(
     provider: str | None = None,
-    repo: ModelRepo = Depends(get_model_repo),
+    db: Database = Depends(get_db),
 ) -> ModelsResponse:
-    models = await repo.list_active(provider=provider)
+    async with db.session() as session:
+        models = await ModelRepo(session).list_active(provider=provider)
     return ModelsResponse(
         models=[_model_out(m) for m in models]
     )
@@ -42,18 +44,18 @@ async def list_models(
 async def create_model(
     body: ModelCreate,
     _user: User = Depends(get_current_user),
-    repo: ModelRepo = Depends(get_model_repo),
+    db: Database = Depends(get_db),
     runtime: AgentRuntimeClient = Depends(get_runtime_client),
 ) -> ModelOut:
-    model = await create_runtime_model(body, repo, runtime)
+    model = await create_runtime_model(body, db, runtime)
     return _model_out(model)
 
 
 @router.post("/models/sync")
 async def sync_models(
     _user: User = Depends(get_current_user),
-    repo: ModelRepo = Depends(get_model_repo),
+    db: Database = Depends(get_db),
     runtime: AgentRuntimeClient = Depends(get_runtime_client),
 ) -> ModelsSyncResponse:
-    synced, deactivated = await sync_runtime_models(repo, runtime)
+    synced, deactivated = await sync_runtime_models(db, runtime)
     return ModelsSyncResponse(synced=synced, deactivated=deactivated)

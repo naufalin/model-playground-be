@@ -10,7 +10,7 @@ async def test_lifespan_initializes_and_closes_app_resources(monkeypatch) -> Non
     async def list_active(self):
         return []
 
-    async def sync_runtime_models(repo, runtime):
+    async def sync_runtime_models(db, runtime):
         return 0, 0
 
     monkeypatch.setattr(ModelRepo, "list_active", list_active)
