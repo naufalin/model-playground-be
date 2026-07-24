@@ -16,6 +16,7 @@ from playground.sessions.schemas import (
     PlaygroundListOut,
     PlaygroundOut,
     PlaygroundUpdate,
+    RegenerateChatRequest,
 )
 from playground.sessions.service import PlaygroundError, PlaygroundService
 
@@ -45,7 +46,9 @@ async def create_playground(
     user: User = Depends(get_current_user),
     service: PlaygroundService = Depends(get_playground_service),
 ) -> PlaygroundOut:
-    return await service.create_playground(user_id=user.id, title=body.title, tools=body.tools)
+    return await service.create_playground(
+        user_id=user.id, title=body.title, tools=body.tools, skills=body.skills
+    )
 
 
 @router.get("", response_model=PlaygroundListOut)
@@ -84,6 +87,8 @@ async def update_playground(
             title=body.title,
             tools=body.tools,
             update_tools="tools" in body.model_fields_set,
+            skills=body.skills,
+            update_skills="skills" in body.model_fields_set,
         )
     except PlaygroundError as exc:
         _raise_http_error(exc)
@@ -115,6 +120,7 @@ async def chat_multi(
             body.message,
             [(model.provider, model.model_name, model.reasoning_effort) for model in body.models],
             body.tools,
+            body.skills,
         )
     except PlaygroundError as exc:
         _raise_http_error(exc)
@@ -141,6 +147,36 @@ async def chat_single(
             user.id,
             body.message,
             body.tools,
+            body.skills,
+        )
+    except PlaygroundError as exc:
+        _raise_http_error(exc)
+
+    return StreamingResponse(
+        stream,
+        media_type="text/event-stream",
+        headers=STREAM_HEADERS,
+    )
+
+
+@router.post("/{encoded_id}/chat/{thread_encoded_id}/messages/{message_id}/regenerate")
+async def regenerate_chat(
+    encoded_id: str,
+    thread_encoded_id: str,
+    message_id: int,
+    body: RegenerateChatRequest,
+    user: User = Depends(get_current_user),
+    service: PlaygroundService = Depends(get_playground_service),
+) -> StreamingResponse:
+    try:
+        stream = await service.stream_regenerated_chat(
+            encoded_id,
+            thread_encoded_id,
+            message_id,
+            user.id,
+            body.message,
+            body.tools,
+            body.skills,
         )
     except PlaygroundError as exc:
         _raise_http_error(exc)

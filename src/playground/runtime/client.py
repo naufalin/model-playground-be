@@ -65,6 +65,12 @@ class AgentRuntimeClient:
         resp.raise_for_status()
         return resp.json()
 
+    async def list_skills(self) -> dict[str, Any]:
+        """Return the runtime skill catalog payload."""
+        resp = await self.client.get("/skills")
+        resp.raise_for_status()
+        return resp.json()
+
     async def create_model(
         self,
         *,
@@ -94,11 +100,22 @@ class AgentRuntimeClient:
         self,
         title: str = "New Session",
         tools: list[str] | None = None,
+        skills: list[str] | None = None,
     ) -> str:
         """Create a new runtime session and return its encoded ID."""
         resp = await self.client.post(
             "/sessions",
-            json={"title": title, "tools": tools},
+            json={"title": title, "tools": tools, "skills": skills},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return data["id"]
+
+    async def fork_session(self, session_id: str, keep_user_turns: int) -> str:
+        """Create a runtime-session copy before the selected user turn."""
+        resp = await self.client.post(
+            f"/sessions/{session_id}/fork",
+            json={"keep_user_turns": keep_user_turns},
         )
         resp.raise_for_status()
         data = resp.json()
@@ -113,6 +130,7 @@ class AgentRuntimeClient:
         model: str | None = None,
         reasoning_effort: str | None = None,
         tools: list[str] | None = None,
+        skills: list[str] | None = None,
     ) -> AsyncGenerator[dict, None]:
         """Stream SSE events from a chat completion request.
 
@@ -128,6 +146,8 @@ class AgentRuntimeClient:
             payload["reasoning_effort"] = reasoning_effort
         if tools is not None:
             payload["tools"] = tools
+        if skills is not None:
+            payload["skills"] = skills
         async with self.client.stream(
             "POST",
             url,

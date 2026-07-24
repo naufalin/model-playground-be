@@ -1,6 +1,6 @@
 """Model thread and message repository."""
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -48,6 +48,16 @@ class ThreadRepo:
         )
         return result.scalar_one_or_none()
 
+    async def get_for_update(self, thread_id: int) -> ModelThread | None:
+        """Load a thread under a row lock before replacing its conversation tail."""
+        result = await self.session.execute(
+            select(ModelThread)
+            .where(ModelThread.id == thread_id)
+            .options(selectinload(ModelThread.messages))
+            .with_for_update()
+        )
+        return result.scalar_one_or_none()
+
     async def get_by_session_and_model(
         self, playground_session_id: int, provider: str, model_name: str
     ) -> ModelThread | None:
@@ -78,6 +88,7 @@ class ThreadRepo:
         thinking_json: dict | None = None,
         request_options_json: dict | None = None,
         output_delta_count: int | None = None,
+        selected_skill: str | None = None,
     ) -> Message:
         msg = Message(
             thread_id=thread_id,
@@ -95,15 +106,40 @@ class ThreadRepo:
             thinking_json=thinking_json,
             request_options_json=request_options_json,
             output_delta_count=output_delta_count,
+            selected_skill=selected_skill,
         )
         self.session.add(msg)
         await self.session.flush()
         return msg
 
+    async def replace_tail_with_user_message(
+        self,
+        thread: ModelThread,
+        target_message_id: int,
+        runtime_session_id: str,
+        content: str,
+        request_options_json: dict[str, str],
+    ) -> ModelThread:
+        """Point a thread at a fork and replace the target user turn onward."""
+        await self.session.execute(
+            delete(Message).where(
+                Message.thread_id == thread.id,
+                Message.id >= target_message_id,
+            )
+        )
+        thread.runtime_session_id = runtime_session_id
+        await self.add_message(
+            thread.id,
+            role="user",
+            content=content,
+            request_options_json=request_options_json,
+        )
+        return thread
+
     async def get_messages(self, thread_id: int) -> list[Message]:
         result = await self.session.execute(
             select(Message)
             .where(Message.thread_id == thread_id)
-            .order_by(Message.created_at)
+            .order_by(Message.created_at, Message.id)
         )
         return list(result.scalars().all())

@@ -37,6 +37,7 @@ class CapturedMessage:
     thinking_json: dict[str, Any] | None = None
     request_options_json: dict[str, str] | None = None
     output_delta_count: int | None = None
+    selected_skill: str | None = None
 
 
 class ChatThreadCapture:
@@ -56,6 +57,7 @@ class ChatThreadCapture:
         self._text = ""
         self._done: dict[str, Any] | None = None
         self._timeline: list[dict[str, Any]] = []
+        self._selected_skill: str | None = None
 
     def start_event(self) -> dict[str, Any]:
         return {
@@ -69,8 +71,16 @@ class ChatThreadCapture:
         event_type = event.get("type")
         if event_type == "done":
             self._done = event
+            selected_skill = event.get("selected_skill")
+            if isinstance(selected_skill, str):
+                self._selected_skill = selected_skill
             self._finish()
             return None
+
+        if event_type == "skill_selected":
+            skill = event.get("skill")
+            if isinstance(skill, str):
+                self._selected_skill = skill
 
         if event_type == "text_delta":
             delta = event.get("delta", "")
@@ -105,6 +115,7 @@ class ChatThreadCapture:
             "usage": self.usage,
             "thinking": done.get("thinking"),
             "output_delta_count": done.get("output_delta_count"),
+            "selected_skill": self._selected_skill,
         }
 
     @property
@@ -156,6 +167,7 @@ class ChatThreadCapture:
                     thinking_json=done.get("thinking"),
                     request_options_json=self.thread.request_options,
                     output_delta_count=done.get("output_delta_count"),
+                    selected_skill=self._selected_skill,
                 )
             )
         return messages

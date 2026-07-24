@@ -9,9 +9,11 @@ from playground.db.models import Base, LlmModel, ModelThread, PlaygroundSession,
 from playground.db.repos.thread_repo import ThreadRepo
 from playground.ids import encode
 from playground.sessions.service import (
+    MessageNotFoundError,
     ModelNotFoundError,
     PlaygroundNotFoundError,
     PlaygroundService,
+    RuntimeForkError,
 )
 
 VIZ_HTML = "<!DOCTYPE html><html><body><div id='chart'></div></body></html>"
@@ -41,16 +43,27 @@ class FakeRuntime:
     def __init__(self) -> None:
         self.created: list[str] = []
         self.created_tools: list[list[str] | None] = []
+        self.created_skills: list[list[str] | None] = []
         self.chat_tools: list[list[str] | None] = []
+        self.chat_skills: list[list[str] | None] = []
+        self.chat_session_ids: list[str] = []
+        self.chat_reasoning_efforts: list[str | None] = []
+        self.fork_calls: list[tuple[str, int]] = []
 
     async def create_session(
         self,
         title: str = "New Session",
         tools: list[str] | None = None,
+        skills: list[str] | None = None,
     ) -> str:
         self.created.append(title)
         self.created_tools.append(tools)
+        self.created_skills.append(skills)
         return f"runtime-{title}"
+
+    async def fork_session(self, session_id: str, keep_user_turns: int) -> str:
+        self.fork_calls.append((session_id, keep_user_turns))
+        return f"fork-{session_id}-{keep_user_turns}"
 
     async def chat_stream(
         self,
@@ -61,8 +74,12 @@ class FakeRuntime:
         model: str | None = None,
         reasoning_effort: str | None = None,
         tools: list[str] | None = None,
+        skills: list[str] | None = None,
     ):
         self.chat_tools.append(tools)
+        self.chat_skills.append(skills)
+        self.chat_session_ids.append(session_id)
+        self.chat_reasoning_efforts.append(reasoning_effort)
         yield {
             "type": "thinking_delta",
             "delta": "thinking",
@@ -98,6 +115,11 @@ class ErrorRuntime(FakeRuntime):
         yield
 
 
+class ForkErrorRuntime(FakeRuntime):
+    async def fork_session(self, session_id: str, keep_user_turns: int) -> str:
+        raise RuntimeError("fork failed")
+
+
 class DoneOnlyThinkingRuntime(FakeRuntime):
     async def chat_stream(
         self,
@@ -108,6 +130,7 @@ class DoneOnlyThinkingRuntime(FakeRuntime):
         model: str | None = None,
         reasoning_effort: str | None = None,
         tools: list[str] | None = None,
+        skills: list[str] | None = None,
     ):
         self.chat_tools.append(tools)
         yield {"type": "text_delta", "delta": "done-only"}
@@ -131,6 +154,7 @@ class VisualizationRuntime(FakeRuntime):
         model: str | None = None,
         reasoning_effort: str | None = None,
         tools: list[str] | None = None,
+        skills: list[str] | None = None,
     ):
         self.chat_tools.append(tools)
         yield {
@@ -167,6 +191,7 @@ class VisualizationOutputFallbackRuntime(FakeRuntime):
         model: str | None = None,
         reasoning_effort: str | None = None,
         tools: list[str] | None = None,
+        skills: list[str] | None = None,
     ):
         self.chat_tools.append(tools)
         yield {
@@ -202,6 +227,7 @@ class MissingTtftRuntime(FakeRuntime):
         model: str | None = None,
         reasoning_effort: str | None = None,
         tools: list[str] | None = None,
+        skills: list[str] | None = None,
     ):
         self.chat_tools.append(tools)
         yield {"type": "text_delta", "delta": "hello"}
@@ -225,6 +251,7 @@ class MarkupToolRuntime(FakeRuntime):
         model: str | None = None,
         reasoning_effort: str | None = None,
         tools: list[str] | None = None,
+        skills: list[str] | None = None,
     ):
         self.chat_tools.append(tools)
         yield {
@@ -297,6 +324,25 @@ async def test_service_creates_and_lists_playgrounds_with_total(db: Database) ->
     assert created.title == "Side by side"
     assert listed.total == 1
     assert listed.sessions[0].id == created.id
+
+
+async def test_service_preserves_session_skill_states(db: Database) -> None:
+    user = await create_user(db)
+    service = PlaygroundService(db, FakeRuntime())
+
+    created = await service.create_playground(
+        user.id, "Skilled", skills=["debugger"]
+    )
+    disabled = await service.update_playground(
+        created.id, user.id, skills=[], update_skills=True
+    )
+    defaults = await service.update_playground(
+        created.id, user.id, skills=None, update_skills=True
+    )
+
+    assert created.skills == ["debugger"]
+    assert disabled.skills == []
+    assert defaults.skills is None
 
 
 async def test_service_rejects_playground_owned_by_another_user(db: Database) -> None:
@@ -640,3 +686,134 @@ async def test_single_chat_emits_error_event_when_runtime_fails(db: Database) ->
 
     assert any('"type": "error"' in chunk and "runtime failed" in chunk for chunk in chunks)
     assert chunks[-1] == 'data: {"type": "all_done"}\n\n'
+
+
+async def test_regenerated_chat_replaces_the_thread_tail_and_reuses_reasoning(
+    db: Database,
+) -> None:
+    user = await create_user(db)
+    model = await create_model(db)
+    playground = await create_session(db, user.id)
+    runtime = FakeRuntime()
+    service = PlaygroundService(db, runtime)
+
+    initial_stream = await service.stream_multi_chat(
+        encode(playground.id),
+        user.id,
+        "Original prompt",
+        [(model.provider, model.model_name, "high")],
+        ["web_search"],
+    )
+    _ = [chunk async for chunk in initial_stream]
+
+    async with db.session() as session:
+        thread = (await ThreadRepo(session).get_by_session(playground.id))[0]
+        thread_id = thread.id
+        original_message = next(message for message in thread.messages if message.role == "user")
+        original_message_id = original_message.id
+
+    stream = await service.stream_regenerated_chat(
+        encode(playground.id),
+        encode(thread_id),
+        original_message_id,
+        user.id,
+        "Edited prompt",
+        [],
+    )
+    chunks = [chunk async for chunk in stream]
+
+    async with db.session() as session:
+        updated = await ThreadRepo(session).get(thread_id)
+        assert updated is not None
+        messages = updated.messages
+
+    assert runtime.fork_calls == [("runtime-openai/gpt-test", 0)]
+    assert runtime.chat_session_ids[-1] == "fork-runtime-openai/gpt-test-0"
+    assert runtime.chat_tools[-1] == []
+    assert runtime.chat_reasoning_efforts[-1] == "high"
+    assert updated.runtime_session_id == "fork-runtime-openai/gpt-test-0"
+    assert [message.role for message in messages] == [
+        "user",
+        "thinking",
+        "tool",
+        "tool",
+        "assistant",
+    ]
+    assert messages[0].content == "Edited prompt"
+    assert messages[0].request_options_json == {
+        "provider": "openai",
+        "model": "gpt-test",
+        "reasoning_effort": "high",
+    }
+    assert any('"type": "thread_start"' in chunk for chunk in chunks)
+    assert chunks[-1] == 'data: {"type": "all_done"}\n\n'
+
+
+async def test_regenerated_chat_keeps_history_when_runtime_fork_fails(db: Database) -> None:
+    user = await create_user(db)
+    model = await create_model(db)
+    playground = await create_session(db, user.id)
+    service = PlaygroundService(db, ForkErrorRuntime())
+
+    initial_stream = await service.stream_multi_chat(
+        encode(playground.id),
+        user.id,
+        "Original prompt",
+        [(model.provider, model.model_name, None)],
+    )
+    _ = [chunk async for chunk in initial_stream]
+
+    async with db.session() as session:
+        thread = (await ThreadRepo(session).get_by_session(playground.id))[0]
+        thread_id = thread.id
+        message_id = next(message.id for message in thread.messages if message.role == "user")
+        original_runtime_session_id = thread.runtime_session_id
+        original_contents = [message.content for message in thread.messages]
+
+    with pytest.raises(RuntimeForkError, match="Could not prepare message regeneration"):
+        await service.stream_regenerated_chat(
+            encode(playground.id),
+            encode(thread_id),
+            message_id,
+            user.id,
+            "Edited prompt",
+        )
+
+    async with db.session() as session:
+        unchanged = await ThreadRepo(session).get(thread_id)
+        assert unchanged is not None
+        assert unchanged.runtime_session_id == original_runtime_session_id
+        assert [message.content for message in unchanged.messages] == original_contents
+
+
+async def test_regenerated_chat_rejects_assistant_messages(db: Database) -> None:
+    user = await create_user(db)
+    model = await create_model(db)
+    playground = await create_session(db, user.id)
+    runtime = FakeRuntime()
+    service = PlaygroundService(db, runtime)
+
+    initial_stream = await service.stream_multi_chat(
+        encode(playground.id),
+        user.id,
+        "Original prompt",
+        [(model.provider, model.model_name, None)],
+    )
+    _ = [chunk async for chunk in initial_stream]
+
+    async with db.session() as session:
+        thread = (await ThreadRepo(session).get_by_session(playground.id))[0]
+        assistant_id = next(
+            message.id for message in thread.messages if message.role == "assistant"
+        )
+
+    with pytest.raises(MessageNotFoundError, match="User message not found"):
+        await service.stream_regenerated_chat(
+            encode(playground.id),
+            encode(thread.id),
+            assistant_id,
+            user.id,
+            "Edited prompt",
+        )
+
+    assert runtime.fork_calls == []

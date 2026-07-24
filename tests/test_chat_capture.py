@@ -79,6 +79,17 @@ def test_capture_adds_ttft_when_runtime_usage_omits_it() -> None:
     }
 
 
+def test_capture_forwards_and_persists_selected_skill() -> None:
+    thread = capture()
+
+    selected = thread.observe({"type": "skill_selected", "skill": "debugger"})
+    thread.observe({"type": "done", "content": "fixed", "selected_skill": "debugger"})
+
+    assert selected == {"type": "skill_selected", "skill": "debugger"}
+    assert thread.thread_done_event()["selected_skill"] == "debugger"
+    assert thread.captured_messages()[-1].selected_skill == "debugger"
+
+
 def test_capture_merges_thinking_delta_by_kind() -> None:
     thread = capture()
 

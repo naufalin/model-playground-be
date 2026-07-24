@@ -9,17 +9,20 @@ from pydantic import BaseModel, ConfigDict, Field
 class PlaygroundCreate(BaseModel):
     title: str = Field(default="New Playground", min_length=1, max_length=255)
     tools: list[str] | None = Field(default=None, max_length=32)
+    skills: list[str] | None = Field(default=None, max_length=32)
 
 
 class PlaygroundUpdate(BaseModel):
     title: str | None = Field(default=None, min_length=1, max_length=255)
     tools: list[str] | None = Field(default=None, max_length=32)
+    skills: list[str] | None = Field(default=None, max_length=32)
 
 
 class PlaygroundOut(BaseModel):
     id: str
     title: str
     tools: list[str] | None = None
+    skills: list[str] | None = None
     created_at: datetime | None = None
 
     model_config = ConfigDict(from_attributes=True)
@@ -45,6 +48,7 @@ class MessageOut(BaseModel):
     output_preview: str | None = None
     viz_html: str | None = None
     output_delta_count: int | None = None
+    selected_skill: str | None = None
     request_options: dict[str, Any] | None = None
     created_at: datetime | None = None
 
@@ -65,6 +69,7 @@ class PlaygroundDetail(BaseModel):
     id: str
     title: str
     tools: list[str] | None = None
+    skills: list[str] | None = None
     created_at: datetime | None = None
     threads: list[ThreadOut] = Field(default_factory=list)
 
@@ -81,8 +86,16 @@ class ChatRequest(BaseModel):
     message: str = Field(min_length=1)
     models: list[ModelSelect]
     tools: list[str] | None = Field(default=None, max_length=32)
+    skills: list[str] | None = Field(default=None, max_length=32)
 
 
 class ContinueChatRequest(BaseModel):
     message: str = Field(min_length=1)
     tools: list[str] | None = Field(default=None, max_length=32)
+    skills: list[str] | None = Field(default=None, max_length=32)
+
+
+class RegenerateChatRequest(BaseModel):
+    message: str = Field(min_length=1)
+    tools: list[str] | None = Field(default=None, max_length=32)
+    skills: list[str] | None = Field(default=None, max_length=32)

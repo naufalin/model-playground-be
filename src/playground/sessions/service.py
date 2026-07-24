@@ -5,7 +5,7 @@ from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 
 from playground.db.connection import Database
-from playground.db.models import ModelThread
+from playground.db.models import Message, ModelThread
 from playground.db.repos.model_repo import ModelRepo
 from playground.db.repos.session_repo import SessionRepo
 from playground.db.repos.thread_repo import ThreadRepo
@@ -38,6 +38,13 @@ class PreparedModelSelection:
     thread: ModelThread | None
 
 
+@dataclass(frozen=True)
+class RegenerationPreparation:
+    source_runtime_session_id: str
+    prior_user_turns: int
+    reasoning_effort: str | None
+
+
 class PlaygroundError(Exception):
     status_code = 400
 
@@ -52,6 +59,18 @@ class PlaygroundNotFoundError(PlaygroundError):
 
 class ModelNotFoundError(PlaygroundError):
     status_code = 400
+
+
+class MessageNotFoundError(PlaygroundError):
+    status_code = 404
+
+
+class ThreadChangedError(PlaygroundError):
+    status_code = 409
+
+
+class RuntimeForkError(PlaygroundError):
+    status_code = 502
 
 
 def _decode_id(encoded_id: str, detail: str) -> int:
@@ -71,14 +90,18 @@ class PlaygroundService:
         user_id: int,
         title: str,
         tools: list[str] | None = None,
+        skills: list[str] | None = None,
     ) -> PlaygroundOut:
         async with self.db.session() as session:
             session_repo = SessionRepo(session)
-            playground = await session_repo.create(user_id=user_id, title=title, tools=tools)
+            playground = await session_repo.create(
+                user_id=user_id, title=title, tools=tools, skills=skills
+            )
             return PlaygroundOut(
                 id=encode(playground.id),
                 title=playground.title,
                 tools=playground.tools_json,
+                skills=playground.skills_json,
                 created_at=playground.created_at,
             )
 
@@ -92,6 +115,7 @@ class PlaygroundService:
                     id=encode(s.id),
                     title=s.title,
                     tools=s.tools_json,
+                    skills=s.skills_json,
                     created_at=s.created_at,
                 )
                 for s in sessions
@@ -115,7 +139,7 @@ class PlaygroundService:
                 model = await model_repo.get_by_provider_model(thread.provider, thread.model_name)
                 display_name = model.display_name if model else thread.model_name
                 # Sort messages by creation time — selectinload doesn't guarantee order
-                sorted_messages = sorted(thread.messages, key=lambda m: m.created_at)
+                sorted_messages = sorted(thread.messages, key=lambda m: (m.created_at, m.id))
                 messages = [
                     MessageOut(
                         id=message.id,
@@ -132,6 +156,7 @@ class PlaygroundService:
                         output_preview=message.output_preview,
                         viz_html=message.viz_html,
                         output_delta_count=message.output_delta_count,
+                        selected_skill=message.selected_skill,
                         request_options=message.request_options_json,
                         created_at=message.created_at,
                     )
@@ -151,6 +176,7 @@ class PlaygroundService:
                 id=encode(playground.id),
                 title=playground.title,
                 tools=playground.tools_json,
+                skills=playground.skills_json,
                 created_at=playground.created_at,
                 threads=thread_outs,
             )
@@ -162,6 +188,8 @@ class PlaygroundService:
         title: str | None = None,
         tools: list[str] | None = None,
         update_tools: bool = False,
+        skills: list[str] | None = None,
+        update_skills: bool = False,
     ) -> PlaygroundOut:
         session_id = _decode_id(encoded_id, "Playground not found")
         async with self.db.session() as session:
@@ -173,12 +201,15 @@ class PlaygroundService:
                 playground = await session_repo.update_title(session_id, user_id, title)
             if update_tools:
                 playground = await session_repo.update_tools(session_id, user_id, tools)
+            if update_skills:
+                playground = await session_repo.update_skills(session_id, user_id, skills)
             if playground is None:
                 raise PlaygroundNotFoundError("Playground not found")
             return PlaygroundOut(
                 id=encode(playground.id),
                 title=playground.title,
                 tools=playground.tools_json,
+                skills=playground.skills_json,
                 created_at=playground.created_at,
             )
 
@@ -198,9 +229,12 @@ class PlaygroundService:
         message: str,
         models: list[ModelSelection],
         tools: list[str] | None = None,
+        skills: list[str] | None = None,
     ) -> AsyncGenerator[str, None]:
         session_id = _decode_id(encoded_id, "Playground not found")
-        threads = await self._prepare_multi_chat(session_id, user_id, message, models, tools)
+        threads = await self._prepare_multi_chat(
+            session_id, user_id, message, models, tools, skills
+        )
 
         async def _stream() -> AsyncGenerator[str, None]:
             captures = {
@@ -220,7 +254,7 @@ class PlaygroundService:
                 for thread, reasoning_effort in threads
             }
 
-            async for event in fanout_chat(self.runtime, threads, message, tools):
+            async for event in fanout_chat(self.runtime, threads, message, tools, skills):
                 capture = captures.get(event.get("thread_id"))
                 if capture is None or event.get("type") == "thread_start":
                     yield _sse(event)
@@ -248,43 +282,112 @@ class PlaygroundService:
         user_id: int,
         message: str,
         tools: list[str] | None = None,
+        skills: list[str] | None = None,
     ) -> AsyncGenerator[str, None]:
         session_id = _decode_id(encoded_id, "Playground not found")
         thread_id = _decode_id(thread_encoded_id, "Thread not found")
         thread = await self._prepare_single_chat(session_id, thread_id, user_id, message)
+        return self._stream_thread_chat(thread, message, tools, skills)
+
+    async def stream_regenerated_chat(
+        self,
+        encoded_id: str,
+        thread_encoded_id: str,
+        message_id: int,
+        user_id: int,
+        message: str,
+        tools: list[str] | None = None,
+        skills: list[str] | None = None,
+    ) -> AsyncGenerator[str, None]:
+        session_id = _decode_id(encoded_id, "Playground not found")
+        thread_id = _decode_id(thread_encoded_id, "Thread not found")
+        preparation = await self._prepare_regeneration(
+            session_id,
+            thread_id,
+            message_id,
+            user_id,
+        )
+
+        try:
+            forked_runtime_session_id = await self.runtime.fork_session(
+                preparation.source_runtime_session_id,
+                preparation.prior_user_turns,
+            )
+        except Exception as exc:
+            raise RuntimeForkError("Could not prepare message regeneration") from exc
+
+        thread = await self._replace_regeneration_tail(
+            session_id,
+            thread_id,
+            message_id,
+            user_id,
+            preparation,
+            forked_runtime_session_id,
+            message,
+        )
+        return self._stream_thread_chat(
+            thread,
+            message,
+            tools,
+            skills,
+            reasoning_effort=preparation.reasoning_effort,
+        )
+
+    def _stream_thread_chat(
+        self,
+        thread: ModelThread,
+        message: str,
+        tools: list[str] | None,
+        skills: list[str] | None,
+        *,
+        reasoning_effort: str | None = None,
+    ) -> AsyncGenerator[str, None]:
 
         async def _stream() -> AsyncGenerator[str, None]:
-            thread_id_enc = encode(thread_id)
+            thread_id_enc = encode(thread.id)
             capture = ChatThreadCapture(
                 ChatThreadInfo(
-                    id=thread_id,
+                    id=thread.id,
                     encoded_id=thread_id_enc,
                     provider=thread.provider,
                     model_name=thread.model_name,
-                    request_options=_request_options(thread.provider, thread.model_name, None),
+                    request_options=_request_options(
+                        thread.provider,
+                        thread.model_name,
+                        reasoning_effort,
+                    ),
                 )
             )
             yield _sse(capture.start_event())
+            failed = False
             try:
                 async for event in self.runtime.chat_stream(
                     thread.runtime_session_id,
                     message,
                     provider=thread.provider,
                     model=thread.model_name,
+                    reasoning_effort=reasoning_effort,
                     tools=tools,
+                    skills=skills,
                 ):
                     event["thread_id"] = thread_id_enc
+                    if event.get("type") == "error":
+                        failed = True
+                        yield _sse(event)
+                        break
                     observed = capture.observe(event)
                     if observed is not None:
                         yield _sse(observed)
             except Exception as exc:
+                failed = True
                 yield _sse(capture.error_event(exc))
 
             async with self.db.session() as session:
                 thread_repo = ThreadRepo(session)
-                await _persist_captured_messages(thread_repo, thread_id, capture)
+                await _persist_captured_messages(thread_repo, thread.id, capture)
 
-            yield _sse(capture.thread_done_event())
+            if not failed:
+                yield _sse(capture.thread_done_event())
             yield _sse({"type": "all_done"})
 
         return _stream()
@@ -296,6 +399,7 @@ class PlaygroundService:
         message: str,
         models: list[ModelSelection],
         tools: list[str] | None = None,
+        skills: list[str] | None = None,
     ) -> list[tuple[ModelThread, str | None]]:
         async with self.db.session() as session:
             session_repo = SessionRepo(session)
@@ -336,6 +440,7 @@ class PlaygroundService:
                 runtime_session_ids[key] = await self.runtime.create_session(
                     title=f"{item.provider}/{item.model_name}",
                     tools=tools,
+                    skills=skills,
                 )
 
         async with self.db.session() as session:
@@ -396,9 +501,92 @@ class PlaygroundService:
             await thread_repo.add_message(thread_id, role="user", content=message)
             return thread
 
+    async def _prepare_regeneration(
+        self,
+        session_id: int,
+        thread_id: int,
+        message_id: int,
+        user_id: int,
+    ) -> RegenerationPreparation:
+        async with self.db.session() as session:
+            session_repo = SessionRepo(session)
+            thread_repo = ThreadRepo(session)
+
+            playground = await session_repo.get_if_owner(session_id, user_id)
+            if playground is None:
+                raise PlaygroundNotFoundError("Playground not found")
+
+            thread = await thread_repo.get(thread_id)
+            if thread is None or thread.playground_session_id != session_id:
+                raise PlaygroundNotFoundError("Thread not found")
+
+            messages = sorted(thread.messages, key=lambda item: (item.created_at, item.id))
+            target_index = next(
+                (index for index, item in enumerate(messages) if item.id == message_id),
+                None,
+            )
+            if target_index is None or messages[target_index].role != "user":
+                raise MessageNotFoundError("User message not found")
+
+            target = messages[target_index]
+            prior_user_turns = sum(item.role == "user" for item in messages[:target_index])
+            return RegenerationPreparation(
+                source_runtime_session_id=thread.runtime_session_id,
+                prior_user_turns=prior_user_turns,
+                reasoning_effort=_reasoning_effort(target),
+            )
+
+    async def _replace_regeneration_tail(
+        self,
+        session_id: int,
+        thread_id: int,
+        message_id: int,
+        user_id: int,
+        preparation: RegenerationPreparation,
+        forked_runtime_session_id: str,
+        message: str,
+    ) -> ModelThread:
+        async with self.db.session() as session:
+            session_repo = SessionRepo(session)
+            thread_repo = ThreadRepo(session)
+
+            playground = await session_repo.get_if_owner(session_id, user_id)
+            if playground is None:
+                raise PlaygroundNotFoundError("Playground not found")
+
+            thread = await thread_repo.get_for_update(thread_id)
+            if thread is None or thread.playground_session_id != session_id:
+                raise PlaygroundNotFoundError("Thread not found")
+            if thread.runtime_session_id != preparation.source_runtime_session_id:
+                raise ThreadChangedError("Thread changed; reload before regenerating")
+
+            target = next((item for item in thread.messages if item.id == message_id), None)
+            if target is None or target.role != "user":
+                raise MessageNotFoundError("User message not found")
+
+            return await thread_repo.replace_tail_with_user_message(
+                thread,
+                message_id,
+                forked_runtime_session_id,
+                message,
+                _request_options(
+                    thread.provider,
+                    thread.model_name,
+                    preparation.reasoning_effort,
+                ),
+            )
+
 
 def _sse(event: dict) -> str:
     return f"data: {json.dumps(event)}\n\n"
+
+
+def _reasoning_effort(message: Message) -> str | None:
+    options = message.request_options_json
+    if not isinstance(options, dict):
+        return None
+    effort = options.get("reasoning_effort")
+    return effort if isinstance(effort, str) and effort else None
 
 
 async def _persist_captured_messages(
@@ -431,4 +619,5 @@ async def _persist_captured_message(
         thinking_json=message.thinking_json,
         request_options_json=message.request_options_json,
         output_delta_count=message.output_delta_count,
+        selected_skill=message.selected_skill,
     )

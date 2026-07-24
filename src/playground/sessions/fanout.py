@@ -14,6 +14,7 @@ async def fanout_chat(
     threads: list[tuple[ModelThread, str | None]],
     user_message: str,
     tools: list[str] | None = None,
+    skills: list[str] | None = None,
 ) -> AsyncGenerator[dict[str, Any], None]:
     """Merge N per-thread runtime streams into one internal event stream."""
     queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
@@ -37,6 +38,7 @@ async def fanout_chat(
                 model=thread.model_name,
                 reasoning_effort=reasoning_effort,
                 tools=tools,
+                skills=skills,
             ):
                 event["thread_id"] = thread_id
                 await queue.put(event)

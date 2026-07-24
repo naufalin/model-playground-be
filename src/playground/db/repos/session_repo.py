@@ -15,8 +15,11 @@ class SessionRepo:
         user_id: int,
         title: str = "New Playground",
         tools: list[str] | None = None,
+        skills: list[str] | None = None,
     ) -> PlaygroundSession:
-        sess = PlaygroundSession(user_id=user_id, title=title, tools_json=tools)
+        sess = PlaygroundSession(
+            user_id=user_id, title=title, tools_json=tools, skills_json=skills
+        )
         self.session.add(sess)
         await self.session.flush()
         return sess
@@ -89,6 +92,19 @@ class SessionRepo:
         if sess is None:
             return None
         sess.tools_json = tools
+        await self.session.flush()
+        return sess
+
+    async def update_skills(
+        self,
+        session_id: int,
+        user_id: int,
+        skills: list[str] | None,
+    ) -> PlaygroundSession | None:
+        sess = await self.get_if_owner(session_id, user_id)
+        if sess is None:
+            return None
+        sess.skills_json = skills
         await self.session.flush()
         return sess
 

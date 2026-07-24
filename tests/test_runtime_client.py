@@ -28,7 +28,11 @@ async def test_runtime_client_sends_bearer_and_keeps_encoded_session_id(monkeypa
     def handler(request: httpx.Request) -> httpx.Response:
         seen_headers["authorization"] = request.headers.get("authorization")
         assert request.url.path == "/sessions"
-        assert json.loads(request.content) == {"title": "openrouter/model", "tools": None}
+        assert json.loads(request.content) == {
+            "title": "openrouter/model",
+            "tools": None,
+            "skills": None,
+        }
         return httpx.Response(201, json={"id": "encoded-runtime-id"})
 
     runtime = _runtime_with_transport(handler)
@@ -39,6 +43,24 @@ async def test_runtime_client_sends_bearer_and_keeps_encoded_session_id(monkeypa
 
     assert seen_headers["authorization"] == "Bearer runtime-token"
     assert session_id == "encoded-runtime-id"
+
+
+async def test_runtime_client_forks_a_session(monkeypatch) -> None:
+    monkeypatch.setenv("SECRET_KEY", "test")
+    get_settings.cache_clear()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/sessions/runtime-1/fork"
+        assert json.loads(request.content) == {"keep_user_turns": 2}
+        return httpx.Response(201, json={"id": "forked-runtime-id"})
+
+    runtime = _runtime_with_transport(handler)
+    try:
+        session_id = await runtime.fork_session("runtime-1", 2)
+    finally:
+        await runtime.close()
+
+    assert session_id == "forked-runtime-id"
 
 
 async def test_runtime_client_chat_stream_passes_model_options(monkeypatch) -> None:
@@ -66,6 +88,7 @@ async def test_runtime_client_chat_stream_passes_model_options(monkeypatch) -> N
                 model="vendor/model",
                 reasoning_effort="high",
                 tools=["web_search"],
+                skills=["debugger"],
             )
         ]
     finally:
@@ -77,6 +100,7 @@ async def test_runtime_client_chat_stream_passes_model_options(monkeypatch) -> N
         "model": "vendor/model",
         "reasoning_effort": "high",
         "tools": ["web_search"],
+        "skills": ["debugger"],
     }
     assert events[-1]["type"] == "done"
 
@@ -96,6 +120,23 @@ async def test_runtime_client_lists_tools(monkeypatch) -> None:
         await runtime.close()
 
     assert payload == {"tools": [{"name": "web_search"}], "total": 1}
+
+
+async def test_runtime_client_lists_skills(monkeypatch) -> None:
+    monkeypatch.setenv("SECRET_KEY", "test")
+    get_settings.cache_clear()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/skills"
+        return httpx.Response(200, json={"skills": [{"name": "debugger"}], "total": 1})
+
+    runtime = _runtime_with_transport(handler)
+    try:
+        payload = await runtime.list_skills()
+    finally:
+        await runtime.close()
+
+    assert payload == {"skills": [{"name": "debugger"}], "total": 1}
 
 
 async def test_runtime_client_lists_models(monkeypatch) -> None:
