@@ -31,3 +31,14 @@ class ModelsResponse(BaseModel):
 class ModelsSyncResponse(BaseModel):
     synced: int
     deactivated: int
+
+
+class OpenRouterAvailableModel(BaseModel):
+    id: str
+    name: str
+    context_length: int | None = None
+    supports_reasoning: bool = False
+
+
+class OpenRouterAvailableResponse(BaseModel):
+    models: list[OpenRouterAvailableModel]

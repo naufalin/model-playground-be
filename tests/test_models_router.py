@@ -206,3 +206,62 @@ async def test_create_model_surfaces_runtime_conflict() -> None:
 
     assert resp.status_code == 409
     assert resp.json() == {"detail": "Model already exists"}
+
+
+async def test_openrouter_available_requires_auth_and_trims_catalog(monkeypatch) -> None:
+    async def fake_catalog():
+        return [
+            {
+                "id": "vendor/reasoner",
+                "name": "Vendor Reasoner",
+                "context_length": 128000,
+                "supported_parameters": ["tools", "reasoning"],
+            },
+            {
+                "id": "vendor/plain",
+                "name": "Vendor Plain",
+                "context_length": "not-an-int",
+                "supported_parameters": ["tools"],
+            },
+            {"name": "missing id"},
+        ]
+
+    monkeypatch.setattr("playground.models.service._openrouter_cache", None)
+    monkeypatch.setattr(
+        "playground.models.service._fetch_openrouter_catalog", fake_catalog
+    )
+
+    app = create_app()
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            unauthorized = await client.get("/models/openrouter/available")
+
+        assert unauthorized.status_code == 401
+
+        app.dependency_overrides[get_current_user] = lambda: User(
+            id=1,
+            email="user@example.com",
+            hashed_password="hashed",
+        )
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.get("/models/openrouter/available")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "models": [
+            {
+                "id": "vendor/reasoner",
+                "name": "Vendor Reasoner",
+                "context_length": 128000,
+                "supports_reasoning": True,
+            },
+            {
+                "id": "vendor/plain",
+                "name": "Vendor Plain",
+                "context_length": None,
+                "supports_reasoning": False,
+            },
+        ]
+    }

@@ -8,8 +8,18 @@ from playground.db.connection import Database
 from playground.db.models import User
 from playground.db.repos.model_repo import ModelRepo
 from playground.deps import get_db, get_runtime_client
-from playground.models.schemas import ModelCreate, ModelOut, ModelsResponse, ModelsSyncResponse
-from playground.models.service import create_runtime_model, sync_runtime_models
+from playground.models.schemas import (
+    ModelCreate,
+    ModelOut,
+    ModelsResponse,
+    ModelsSyncResponse,
+    OpenRouterAvailableResponse,
+)
+from playground.models.service import (
+    create_runtime_model,
+    list_openrouter_models,
+    sync_runtime_models,
+)
 from playground.runtime.client import AgentRuntimeClient
 
 router = APIRouter(tags=["models"])
@@ -38,6 +48,14 @@ async def list_models(
     return ModelsResponse(
         models=[_model_out(m) for m in models]
     )
+
+
+@router.get("/models/openrouter/available", response_model=OpenRouterAvailableResponse)
+async def list_openrouter_available_models(
+    _user: User = Depends(get_current_user),
+) -> OpenRouterAvailableResponse:
+    models = await list_openrouter_models()
+    return OpenRouterAvailableResponse(models=models)
 
 
 @router.post("/models", response_model=ModelOut)
