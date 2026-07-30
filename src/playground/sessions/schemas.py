@@ -49,6 +49,8 @@ class MessageOut(BaseModel):
     viz_html: str | None = None
     output_delta_count: int | None = None
     selected_skill: str | None = None
+    turn_id: str | None = None
+    transcript_sequence: int | None = None
     request_options: dict[str, Any] | None = None
     created_at: datetime | None = None
 

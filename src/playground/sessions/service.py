@@ -157,6 +157,8 @@ class PlaygroundService:
                         viz_html=message.viz_html,
                         output_delta_count=message.output_delta_count,
                         selected_skill=message.selected_skill,
+                        turn_id=message.turn_id,
+                        transcript_sequence=message.transcript_sequence,
                         request_options=message.request_options_json,
                         created_at=message.created_at,
                     )
@@ -373,6 +375,7 @@ class PlaygroundService:
                     event["thread_id"] = thread_id_enc
                     if event.get("type") == "error":
                         failed = True
+                        capture.observe(event)
                         yield _sse(event)
                         break
                     observed = capture.observe(event)
@@ -620,4 +623,6 @@ async def _persist_captured_message(
         request_options_json=message.request_options_json,
         output_delta_count=message.output_delta_count,
         selected_skill=message.selected_skill,
+        turn_id=message.turn_id,
+        transcript_sequence=message.transcript_sequence,
     )

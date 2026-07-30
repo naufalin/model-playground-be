@@ -126,6 +126,8 @@ class Message(Base):
     request_options_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     output_delta_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     selected_skill: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    turn_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    transcript_sequence: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     thread: Mapped["ModelThread"] = relationship(back_populates="messages")

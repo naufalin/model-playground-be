@@ -118,7 +118,11 @@ def test_capture_uses_done_only_thinking_fallback() -> None:
 
     messages = thread.captured_messages()
 
-    assert [message.role for message in messages] == ["thinking", "assistant"]
+    assert [message.role for message in messages] == [
+        "thinking",
+        "assistant_part",
+        "assistant",
+    ]
     assert messages[0].content == "final summary"
     assert messages[0].thinking_json == {"summary": "final summary"}
 
@@ -145,9 +149,9 @@ def test_capture_copies_tool_start_args_to_matching_end() -> None:
 
     messages = thread.captured_messages()
 
+    assert len(messages) == 1
     assert messages[0].tool_input == {"query": "hello"}
-    assert messages[1].tool_input is None
-    assert messages[1].output_preview == "done"
+    assert messages[0].output_preview == "done"
 
 
 def test_capture_persists_visualization_html_from_all_runtime_shapes() -> None:
@@ -185,7 +189,7 @@ def test_capture_persists_visualization_html_from_all_runtime_shapes() -> None:
     assert preview.captured_messages()[0].viz_html == VIZ_HTML
 
 
-def test_capture_error_does_not_create_assistant_without_content() -> None:
+def test_capture_error_creates_ordered_error_without_assistant() -> None:
     thread = capture([0, 0.1])
 
     assert thread.error_event(RuntimeError("runtime failed")) == {
@@ -194,7 +198,10 @@ def test_capture_error_does_not_create_assistant_without_content() -> None:
         "error": "runtime failed",
     }
 
-    assert thread.captured_messages() == []
+    messages = thread.captured_messages()
+    assert [(message.role, message.content) for message in messages] == [
+        ("error", "runtime failed")
+    ]
 
 
 def test_normalize_tool_name_extracts_markup_tool_label() -> None:
@@ -262,3 +269,155 @@ def test_tool_viz_html_falls_back_to_output_preview_json() -> None:
         )
         == VIZ_HTML
     )
+
+
+def test_capture_preserves_text_thinking_text_order_without_inserting_spaces() -> None:
+    thread = capture()
+
+    thread.observe({"type": "text_delta", "delta": "you."})
+    thread.observe({"type": "thinking_delta", "kind": "reasoning", "delta": "consider"})
+    thread.observe({"type": "text_delta", "delta": "I found"})
+    thread.observe({"type": "done", "content": "you.I found"})
+
+    messages = thread.captured_messages()
+
+    assert [message.role for message in messages] == [
+        "assistant_part",
+        "thinking",
+        "assistant_part",
+        "assistant",
+    ]
+    assert [message.content for message in messages] == [
+        "you.",
+        "consider",
+        "I found",
+        "you.I found",
+    ]
+    assert [message.transcript_sequence for message in messages] == [0, 1, 2, None]
+    assert len({message.turn_id for message in messages}) == 1
+
+
+def test_capture_keeps_tool_at_start_position_and_updates_completion() -> None:
+    thread = capture()
+
+    thread.observe({"type": "text_delta", "delta": "before"})
+    thread.observe({"type": "skill_selected", "skill": "researcher"})
+    thread.observe(
+        {
+            "type": "tool_start",
+            "tool": "web_search",
+            "call_id": "call-1",
+            "args": {"query": "nasi goreng"},
+        }
+    )
+    thread.observe({"type": "thinking_delta", "kind": "reasoning", "delta": "checking"})
+    thread.observe(
+        {
+            "type": "tool_end",
+            "tool": "web_search",
+            "call_id": "call-1",
+            "output_preview": "three results",
+        }
+    )
+    thread.observe({"type": "text_delta", "delta": "after"})
+    thread.observe({"type": "done", "content": "beforeafter"})
+
+    messages = thread.captured_messages()
+
+    assert [message.role for message in messages] == [
+        "assistant_part",
+        "skill",
+        "tool",
+        "thinking",
+        "assistant_part",
+        "assistant",
+    ]
+    assert messages[2].tool_input == {"query": "nasi goreng"}
+    assert messages[2].output_preview == "three results"
+
+
+def test_capture_appends_done_suffix_after_intervening_activity() -> None:
+    thread = capture()
+
+    thread.observe({"type": "text_delta", "delta": "first"})
+    thread.observe({"type": "thinking_delta", "kind": "summary", "delta": "pause"})
+    thread.observe({"type": "done", "content": "first suffix"})
+
+    messages = thread.captured_messages()
+
+    assert [(message.role, message.content) for message in messages] == [
+        ("assistant_part", "first"),
+        ("thinking", "pause"),
+        ("assistant_part", " suffix"),
+        ("assistant", "first suffix"),
+    ]
+
+
+def test_capture_drops_text_fragments_when_done_replaces_streamed_text() -> None:
+    thread = capture()
+
+    thread.observe({"type": "text_delta", "delta": "draft"})
+    thread.observe({"type": "thinking_delta", "kind": "summary", "delta": "pause"})
+    thread.observe({"type": "done", "content": "corrected"})
+
+    messages = thread.captured_messages()
+
+    assert [(message.role, message.content) for message in messages] == [
+        ("thinking", "pause"),
+        ("assistant", "corrected"),
+    ]
+
+
+def test_capture_supports_overlapping_and_unmatched_tool_calls() -> None:
+    thread = capture()
+
+    thread.observe(
+        {"type": "tool_start", "tool": "first", "call_id": "call-1", "args": {"n": 1}}
+    )
+    thread.observe(
+        {"type": "tool_start", "tool": "second", "call_id": "call-2", "args": {"n": 2}}
+    )
+    thread.observe(
+        {
+            "type": "tool_end",
+            "tool": "second",
+            "call_id": "call-2",
+            "output_preview": "second done",
+        }
+    )
+    thread.observe(
+        {
+            "type": "tool_end",
+            "tool": "missing",
+            "call_id": "call-3",
+            "output_preview": "unmatched done",
+        }
+    )
+    thread.observe(
+        {
+            "type": "tool_end",
+            "tool": "first",
+            "call_id": "call-1",
+            "output_preview": "first done",
+        }
+    )
+
+    messages = thread.captured_messages()
+
+    assert [message.tool_call_id for message in messages] == ["call-1", "call-2", "call-3"]
+    assert [message.output_preview for message in messages] == [
+        "first done",
+        "second done",
+        "unmatched done",
+    ]
+
+
+def test_capture_honors_empty_done_content_as_canonical_replacement() -> None:
+    thread = capture()
+
+    thread.observe({"type": "text_delta", "delta": "draft"})
+    thread.observe({"type": "done", "content": ""})
+
+    messages = thread.captured_messages()
+
+    assert [(message.role, message.content) for message in messages] == [("assistant", "")]

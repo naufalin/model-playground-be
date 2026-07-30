@@ -447,13 +447,15 @@ async def test_multi_chat_persists_user_and_assistant_messages(db: Database) -> 
     async with db.session() as session:
         threads = await ThreadRepo(session).get_by_session(playground.id)
         messages = threads[0].messages
+    detail = await service.get_playground(encode(playground.id), user.id)
+    detail_messages = detail.threads[0].messages
 
     assert chunks[-1] == 'data: {"type": "all_done"}\n\n'
     assert [message.role for message in messages] == [
         "user",
         "thinking",
         "tool",
-        "tool",
+        "assistant_part",
         "assistant",
     ]
     assert messages[0].content == "hello"
@@ -466,13 +468,17 @@ async def test_multi_chat_persists_user_and_assistant_messages(db: Database) -> 
     assert messages[1].thinking_json == {"reasoning": "thinking"}
     assert messages[2].tool_name == "web_search"
     assert messages[2].tool_input == {"query": "hello"}
-    assert messages[3].output_preview == '{"results":[{"title":"Gold price"}]}'
+    assert messages[2].output_preview == '{"results":[{"title":"Gold price"}]}'
+    assert messages[3].content == "hello world"
     assert messages[4].content == "hello world"
     assert messages[4].provider == "openai"
     assert messages[4].model == "gpt-test"
     assert messages[4].usage_json["reasoning_tokens"] == 2
     assert messages[4].thinking_json["reasoning"] == "visible thought"
     assert messages[4].output_delta_count == 2
+    assert [message.transcript_sequence for message in messages[1:]] == [0, 1, 2, None]
+    assert [message.transcript_sequence for message in detail_messages[1:]] == [0, 1, 2, None]
+    assert detail_messages[-1].turn_id == detail_messages[-2].turn_id
     assert service.runtime.chat_tools == [["web_search"]]
 
 
@@ -504,7 +510,7 @@ async def test_multi_chat_persists_messages_before_all_done(db: Database) -> Non
             "user",
             "thinking",
             "tool",
-            "tool",
+            "assistant_part",
             "assistant",
         ]
         assert messages[-1].content == "hello world"
@@ -560,10 +566,16 @@ async def test_multi_chat_persists_done_only_thinking_before_assistant(
         messages = threads[0].messages
 
     assert chunks[-1] == 'data: {"type": "all_done"}\n\n'
-    assert [message.role for message in messages] == ["user", "thinking", "assistant"]
+    assert [message.role for message in messages] == [
+        "user",
+        "thinking",
+        "assistant_part",
+        "assistant",
+    ]
     assert messages[1].content == "final summary"
     assert messages[1].thinking_json == {"summary": "final summary"}
     assert messages[2].content == "done-only"
+    assert messages[3].content == "done-only"
 
 
 async def test_multi_chat_persists_visualization_html(db: Database) -> None:
@@ -590,10 +602,7 @@ async def test_multi_chat_persists_visualization_html(db: Database) -> None:
     ]
 
     assert '"viz_html": "<!DOCTYPE html>' in "".join(chunks)
-    assert [message.tool_name for message in tool_messages] == [
-        "generate_visualization",
-        "generate_visualization",
-    ]
+    assert [message.tool_name for message in tool_messages] == ["generate_visualization"]
     assert tool_messages[-1].viz_html == VIZ_HTML
     assert detail_tool_messages[-1].viz_html == tool_messages[-1].viz_html
 
@@ -619,10 +628,7 @@ async def test_multi_chat_extracts_visualization_html_from_output_fallback(
         tool_messages = [message for message in threads[0].messages if message.role == "tool"]
 
     assert chunks[-1] == 'data: {"type": "all_done"}\n\n'
-    assert [message.tool_name for message in tool_messages] == [
-        "generate_visualization",
-        "generate_visualization",
-    ]
+    assert [message.tool_name for message in tool_messages] == ["generate_visualization"]
     assert tool_messages[-1].viz_html == VIZ_HTML
 
 
@@ -736,7 +742,7 @@ async def test_regenerated_chat_replaces_the_thread_tail_and_reuses_reasoning(
         "user",
         "thinking",
         "tool",
-        "tool",
+        "assistant_part",
         "assistant",
     ]
     assert messages[0].content == "Edited prompt"

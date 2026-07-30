@@ -89,6 +89,8 @@ class ThreadRepo:
         request_options_json: dict | None = None,
         output_delta_count: int | None = None,
         selected_skill: str | None = None,
+        turn_id: str | None = None,
+        transcript_sequence: int | None = None,
     ) -> Message:
         msg = Message(
             thread_id=thread_id,
@@ -107,6 +109,8 @@ class ThreadRepo:
             request_options_json=request_options_json,
             output_delta_count=output_delta_count,
             selected_skill=selected_skill,
+            turn_id=turn_id,
+            transcript_sequence=transcript_sequence,
         )
         self.session.add(msg)
         await self.session.flush()
