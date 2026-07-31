@@ -11,6 +11,7 @@ from playground.db.connection import Database
 from playground.db.repos.model_repo import ModelRepo
 from playground.models.router import router as models_router
 from playground.models.service import sync_runtime_models
+from playground.pricing.router import router as pricing_router
 from playground.prompts.router import router as prompts_router
 from playground.runtime.client import AgentRuntimeClient
 from playground.sessions.router import router as playground_router
@@ -68,6 +69,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(auth_router)
     app.include_router(models_router)
     app.include_router(prompts_router)
+    app.include_router(pricing_router)
     app.include_router(tools_router)
     app.include_router(skills_router)
     app.include_router(playground_router)

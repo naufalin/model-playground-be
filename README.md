@@ -38,6 +38,7 @@ uv run uvicorn playground.app:app --reload --port 8080
 | GET | `/auth/me` | Current user |
 | GET | `/models` | List available LLMs |
 | POST | `/models/sync` | Sync model metadata from the agent runtime |
+| GET | `/pricing/models` | Normalized OpenAI and OpenRouter pricing catalog |
 | POST | `/playground` | Create session |
 | GET | `/playground` | List sessions |
 | GET | `/playground/{id}` | Session detail + threads |
@@ -57,6 +58,7 @@ src/playground/
 ├── auth/              # JWT auth (signup, login, me)
 ├── db/                # SQLAlchemy models + repos
 ├── models/            # GET /models endpoint
+├── pricing/           # Catalog normalization + response estimates
 ├── sessions/          # CRUD + chat service + fanout streaming
 └── runtime/           # Agent runtime HTTP client
 ```

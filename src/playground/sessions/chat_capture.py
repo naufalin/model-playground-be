@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
 
+from playground.pricing.service import estimate_openai_cost
+
 TOOL_NAME_MAX_LENGTH = 100
 OUTPUT_PREVIEW_MAX_LENGTH = 500
 VISUALIZATION_TOOL_NAME = "generate_visualization"
@@ -154,7 +156,16 @@ class ChatThreadCapture:
     def usage(self) -> dict[str, Any] | None:
         done = self._done or {}
         usage = done.get("usage")
-        return _usage_with_ttft(usage if isinstance(usage, dict) else None, self._first_token_ms)
+        normalized = _usage_with_ttft(
+            usage if isinstance(usage, dict) else None,
+            self._first_token_ms,
+        )
+        if (done.get("provider") or self.thread.provider) == "openai":
+            return estimate_openai_cost(
+                normalized,
+                done.get("model") or self.thread.model_name,
+            )
+        return normalized
 
     def captured_messages(self) -> list[CapturedMessage]:
         done = self._done or {}
