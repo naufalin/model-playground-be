@@ -1,6 +1,7 @@
 # LLM Playground — Backend
 
-Test multiple LLMs side-by-side. Send one prompt, get responses from N models in parallel.
+Experiment deeply with one LLM or compare multiple models side-by-side. Tune prompts,
+tools, skills, and reasoning settings in a durable playground session.
 
 ## Stack
 

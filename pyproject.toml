@@ -8,7 +8,7 @@ packages = ["src/playground"]
 [project]
 name = "model-playground-be"
 version = "0.1.0"
-description = "LLM Playground — test multiple models side-by-side"
+description = "LLM Playground — experiment with one model or compare several"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

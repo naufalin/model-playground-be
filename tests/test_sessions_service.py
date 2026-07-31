@@ -323,12 +323,16 @@ async def create_user(db: Database, email: str = "user@example.com") -> User:
         return user
 
 
-async def create_model(db: Database) -> LlmModel:
+async def create_model(
+    db: Database,
+    model_name: str = "gpt-test",
+    display_name: str = "GPT Test",
+) -> LlmModel:
     async with db.session() as session:
         model = LlmModel(
             provider="openai",
-            model_name="gpt-test",
-            display_name="GPT Test",
+            model_name=model_name,
+            display_name=display_name,
             is_active=True,
         )
         session.add(model)
@@ -386,6 +390,29 @@ async def test_single_playground_rejects_multiple_models(db: Database) -> None:
                 ("openai", "gpt-test", None),
                 ("openai", "gpt-test", "medium"),
             ],
+        )
+
+
+async def test_single_playground_locks_model_after_first_prompt(db: Database) -> None:
+    user = await create_user(db)
+    first_model = await create_model(db)
+    second_model = await create_model(db, "gpt-other", "GPT Other")
+    service = PlaygroundService(db, FakeRuntime())
+    created = await service.create_playground(user.id, "Focused experiment", mode="single")
+
+    await service.stream_multi_chat(
+        created.id,
+        user.id,
+        "First prompt",
+        [(first_model.provider, first_model.model_name, None)],
+    )
+
+    with pytest.raises(PlaygroundError, match="model is locked"):
+        await service.stream_multi_chat(
+            created.id,
+            user.id,
+            "Second prompt",
+            [(second_model.provider, second_model.model_name, None)],
         )
 
 

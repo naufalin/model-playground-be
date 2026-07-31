@@ -505,6 +505,16 @@ class PlaygroundService:
                 raise PlaygroundNotFoundError("Playground not found")
             if playground.mode == "single" and len(models) != 1:
                 raise PlaygroundError("Single-mode playgrounds require exactly one model")
+            if playground.mode == "single":
+                existing_threads = await thread_repo.get_by_session(session_id)
+                requested_model = models[0][:2]
+                if existing_threads and any(
+                    (thread.provider, thread.model_name) != requested_model
+                    for thread in existing_threads
+                ):
+                    raise PlaygroundError(
+                        "The model is locked after a Single-mode playground starts"
+                    )
             playground.comparison_started_at = (
                 playground.comparison_started_at or datetime.now(UTC)
             )
