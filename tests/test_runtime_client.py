@@ -45,6 +45,54 @@ async def test_runtime_client_sends_bearer_and_keeps_encoded_session_id(monkeypa
     assert session_id == "encoded-runtime-id"
 
 
+async def test_runtime_client_creates_session_with_system_prompt(monkeypatch) -> None:
+    monkeypatch.setenv("SECRET_KEY", "test")
+    get_settings.cache_clear()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert json.loads(request.content) == {
+            "title": "openrouter/model",
+            "tools": [],
+            "skills": None,
+            "system_prompt": "You are a concise analyst.",
+        }
+        return httpx.Response(201, json={"id": "encoded-runtime-id"})
+
+    runtime = _runtime_with_transport(handler)
+    try:
+        await runtime.create_session(
+            title="openrouter/model",
+            tools=[],
+            system_prompt="You are a concise analyst.",
+        )
+    finally:
+        await runtime.close()
+
+
+async def test_runtime_client_lists_system_prompts(monkeypatch) -> None:
+    monkeypatch.setenv("SECRET_KEY", "test")
+    get_settings.cache_clear()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/prompts"
+        return httpx.Response(
+            200,
+            json={
+                "prompts": [
+                    {"id": 1, "name": "default", "content": "Helpful."},
+                ]
+            },
+        )
+
+    runtime = _runtime_with_transport(handler)
+    try:
+        payload = await runtime.list_prompts()
+    finally:
+        await runtime.close()
+
+    assert payload["prompts"][0]["name"] == "default"
+
+
 async def test_runtime_client_forks_a_session(monkeypatch) -> None:
     monkeypatch.setenv("SECRET_KEY", "test")
     get_settings.cache_clear()

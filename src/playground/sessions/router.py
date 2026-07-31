@@ -47,7 +47,12 @@ async def create_playground(
     service: PlaygroundService = Depends(get_playground_service),
 ) -> PlaygroundOut:
     return await service.create_playground(
-        user_id=user.id, title=body.title, tools=body.tools, skills=body.skills
+        user_id=user.id,
+        title=body.title,
+        tools=body.tools,
+        skills=body.skills,
+        system_prompt_name=body.system_prompt_name,
+        system_prompt_content=body.system_prompt_content,
     )
 
 
@@ -89,6 +94,12 @@ async def update_playground(
             update_tools="tools" in body.model_fields_set,
             skills=body.skills,
             update_skills="skills" in body.model_fields_set,
+            system_prompt_name=body.system_prompt_name,
+            system_prompt_content=body.system_prompt_content,
+            update_system_prompt=bool(
+                {"system_prompt_name", "system_prompt_content"}
+                & body.model_fields_set
+            ),
         )
     except PlaygroundError as exc:
         _raise_http_error(exc)

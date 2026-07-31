@@ -1,0 +1,1 @@
+"""System prompt catalog proxy."""

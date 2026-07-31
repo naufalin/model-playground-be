@@ -64,6 +64,11 @@ class PlaygroundSession(Base):
     title: Mapped[str] = mapped_column(String(255), default="New Playground")
     tools_json: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     skills_json: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    system_prompt_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    system_prompt_content: Mapped[str | None] = mapped_column(Text, nullable=True)
+    comparison_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

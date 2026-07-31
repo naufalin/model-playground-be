@@ -14,6 +14,7 @@ from playground.sessions.service import (
     PlaygroundNotFoundError,
     PlaygroundService,
     RuntimeForkError,
+    SystemPromptLockedError,
 )
 
 VIZ_HTML = "<!DOCTYPE html><html><body><div id='chart'></div></body></html>"
@@ -44,21 +45,35 @@ class FakeRuntime:
         self.created: list[str] = []
         self.created_tools: list[list[str] | None] = []
         self.created_skills: list[list[str] | None] = []
+        self.created_system_prompts: list[str | None] = []
         self.chat_tools: list[list[str] | None] = []
         self.chat_skills: list[list[str] | None] = []
         self.chat_session_ids: list[str] = []
         self.chat_reasoning_efforts: list[str | None] = []
         self.fork_calls: list[tuple[str, int]] = []
 
+    async def list_prompts(self) -> dict:
+        return {
+            "prompts": [
+                {
+                    "id": 1,
+                    "name": "default",
+                    "content": "You are a helpful assistant.",
+                }
+            ]
+        }
+
     async def create_session(
         self,
         title: str = "New Session",
         tools: list[str] | None = None,
         skills: list[str] | None = None,
+        system_prompt: str | None = None,
     ) -> str:
         self.created.append(title)
         self.created_tools.append(tools)
         self.created_skills.append(skills)
+        self.created_system_prompts.append(system_prompt)
         return f"runtime-{title}"
 
     async def fork_session(self, session_id: str, keep_user_turns: int) -> str:
@@ -322,8 +337,29 @@ async def test_service_creates_and_lists_playgrounds_with_total(db: Database) ->
     listed = await service.list_playgrounds(user.id, limit=20, offset=0)
 
     assert created.title == "Side by side"
+    assert created.system_prompt_name == "Default"
+    assert created.system_prompt_content == "You are a helpful assistant."
     assert listed.total == 1
     assert listed.sessions[0].id == created.id
+    assert listed.sessions[0].system_prompt_content is None
+
+
+async def test_service_persists_system_prompt_snapshot(db: Database) -> None:
+    user = await create_user(db)
+    service = PlaygroundService(db, FakeRuntime())
+
+    created = await service.create_playground(
+        user.id,
+        "Prompt comparison",
+        system_prompt_name="Concise analyst",
+        system_prompt_content="You are a concise analyst.",
+    )
+    detail = await service.get_playground(created.id, user.id)
+
+    assert created.system_prompt_name == "Concise analyst"
+    assert created.system_prompt_content == "You are a concise analyst."
+    assert detail.system_prompt_name == "Concise analyst"
+    assert detail.system_prompt_content == "You are a concise analyst."
 
 
 async def test_service_preserves_session_skill_states(db: Database) -> None:
@@ -406,6 +442,60 @@ async def test_multi_chat_creates_threads_only_for_valid_models(db: Database) ->
             user.id,
             "hello",
             [("openai", "missing", None)],
+        )
+
+
+async def test_multi_chat_applies_playground_system_prompt_to_runtime_sessions(
+    db: Database,
+) -> None:
+    user = await create_user(db)
+    model = await create_model(db)
+    service = PlaygroundService(db, FakeRuntime())
+    created = await service.create_playground(
+        user.id,
+        "Prompt comparison",
+        system_prompt_name="Custom",
+        system_prompt_content="Return JSON only.",
+    )
+
+    await service.stream_multi_chat(
+        created.id,
+        user.id,
+        "hello",
+        [(model.provider, model.model_name, None)],
+    )
+
+    runtime = service.runtime
+    assert isinstance(runtime, FakeRuntime)
+    assert runtime.created_system_prompts == ["Return JSON only."]
+
+
+async def test_service_locks_system_prompt_after_comparison_starts(
+    db: Database,
+) -> None:
+    user = await create_user(db)
+    model = await create_model(db)
+    service = PlaygroundService(db, FakeRuntime())
+    created = await service.create_playground(
+        user.id,
+        "Prompt comparison",
+        system_prompt_name="Default",
+        system_prompt_content="You are helpful.",
+    )
+    await service.stream_multi_chat(
+        created.id,
+        user.id,
+        "hello",
+        [(model.provider, model.model_name, None)],
+    )
+
+    with pytest.raises(SystemPromptLockedError):
+        await service.update_playground(
+            created.id,
+            user.id,
+            system_prompt_name="Changed",
+            system_prompt_content="Behave differently.",
+            update_system_prompt=True,
         )
 
 

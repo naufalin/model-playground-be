@@ -71,6 +71,12 @@ class AgentRuntimeClient:
         resp.raise_for_status()
         return resp.json()
 
+    async def list_prompts(self) -> dict[str, Any]:
+        """Return the reusable system-prompt catalog."""
+        resp = await self.client.get("/prompts")
+        resp.raise_for_status()
+        return resp.json()
+
     async def create_model(
         self,
         *,
@@ -101,12 +107,13 @@ class AgentRuntimeClient:
         title: str = "New Session",
         tools: list[str] | None = None,
         skills: list[str] | None = None,
+        system_prompt: str | None = None,
     ) -> str:
         """Create a new runtime session and return its encoded ID."""
-        resp = await self.client.post(
-            "/sessions",
-            json={"title": title, "tools": tools, "skills": skills},
-        )
+        payload = {"title": title, "tools": tools, "skills": skills}
+        if system_prompt is not None:
+            payload["system_prompt"] = system_prompt
+        resp = await self.client.post("/sessions", json=payload)
         resp.raise_for_status()
         data = resp.json()
         return data["id"]

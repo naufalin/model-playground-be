@@ -16,11 +16,33 @@ class SessionRepo:
         title: str = "New Playground",
         tools: list[str] | None = None,
         skills: list[str] | None = None,
+        system_prompt_name: str | None = None,
+        system_prompt_content: str | None = None,
     ) -> PlaygroundSession:
         sess = PlaygroundSession(
-            user_id=user_id, title=title, tools_json=tools, skills_json=skills
+            user_id=user_id,
+            title=title,
+            tools_json=tools,
+            skills_json=skills,
+            system_prompt_name=system_prompt_name,
+            system_prompt_content=system_prompt_content,
         )
         self.session.add(sess)
+        await self.session.flush()
+        return sess
+
+    async def update_system_prompt(
+        self,
+        session_id: int,
+        user_id: int,
+        name: str,
+        content: str,
+    ) -> PlaygroundSession | None:
+        sess = await self.get_if_owner(session_id, user_id)
+        if sess is None:
+            return None
+        sess.system_prompt_name = name
+        sess.system_prompt_content = content
         await self.session.flush()
         return sess
 
@@ -54,6 +76,19 @@ class SessionRepo:
                 PlaygroundSession.id == session_id,
                 PlaygroundSession.user_id == user_id,
             )
+        )
+        return result.scalar_one_or_none()
+
+    async def get_if_owner_for_update(
+        self, session_id: int, user_id: int
+    ) -> PlaygroundSession | None:
+        result = await self.session.execute(
+            select(PlaygroundSession)
+            .where(
+                PlaygroundSession.id == session_id,
+                PlaygroundSession.user_id == user_id,
+            )
+            .with_for_update()
         )
         return result.scalar_one_or_none()
 

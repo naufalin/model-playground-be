@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 from playground.db.connection import Database
 from playground.db.models import Message, ModelThread
@@ -69,6 +70,10 @@ class ThreadChangedError(PlaygroundError):
     status_code = 409
 
 
+class SystemPromptLockedError(PlaygroundError):
+    status_code = 409
+
+
 class RuntimeForkError(PlaygroundError):
     status_code = 502
 
@@ -91,19 +96,65 @@ class PlaygroundService:
         title: str,
         tools: list[str] | None = None,
         skills: list[str] | None = None,
+        system_prompt_name: str | None = None,
+        system_prompt_content: str | None = None,
     ) -> PlaygroundOut:
+        if system_prompt_name is None or system_prompt_content is None:
+            system_prompt_name, system_prompt_content = (
+                await self._get_default_system_prompt()
+            )
         async with self.db.session() as session:
             session_repo = SessionRepo(session)
             playground = await session_repo.create(
-                user_id=user_id, title=title, tools=tools, skills=skills
+                user_id=user_id,
+                title=title,
+                tools=tools,
+                skills=skills,
+                system_prompt_name=system_prompt_name,
+                system_prompt_content=system_prompt_content,
             )
             return PlaygroundOut(
                 id=encode(playground.id),
                 title=playground.title,
                 tools=playground.tools_json,
                 skills=playground.skills_json,
+                system_prompt_name=playground.system_prompt_name,
+                system_prompt_content=playground.system_prompt_content,
                 created_at=playground.created_at,
             )
+
+    async def _get_default_system_prompt(self) -> tuple[str, str]:
+        payload = await self.runtime.list_prompts()
+        prompts = payload.get("prompts", [])
+        default = next(
+            (prompt for prompt in prompts if prompt.get("name") == "default"),
+            prompts[0] if prompts else None,
+        )
+        if not default or not default.get("content"):
+            raise PlaygroundError("No default system prompt is available")
+        return "Default", str(default["content"])
+
+    async def _ensure_system_prompt_snapshot(
+        self,
+        session_id: int,
+        user_id: int,
+    ) -> None:
+        async with self.db.session() as session:
+            repo = SessionRepo(session)
+            playground = await repo.get_if_owner(session_id, user_id)
+            if playground is None:
+                raise PlaygroundNotFoundError("Playground not found")
+            if playground.system_prompt_content is not None:
+                return
+
+        name, content = await self._get_default_system_prompt()
+        async with self.db.session() as session:
+            repo = SessionRepo(session)
+            playground = await repo.get_if_owner_for_update(session_id, user_id)
+            if playground is None:
+                raise PlaygroundNotFoundError("Playground not found")
+            if playground.system_prompt_content is None:
+                await repo.update_system_prompt(session_id, user_id, name, content)
 
     async def list_playgrounds(self, user_id: int, limit: int, offset: int) -> PlaygroundListOut:
         async with self.db.session() as session:
@@ -116,6 +167,7 @@ class PlaygroundService:
                     title=s.title,
                     tools=s.tools_json,
                     skills=s.skills_json,
+                    system_prompt_name=s.system_prompt_name,
                     created_at=s.created_at,
                 )
                 for s in sessions
@@ -179,6 +231,8 @@ class PlaygroundService:
                 title=playground.title,
                 tools=playground.tools_json,
                 skills=playground.skills_json,
+                system_prompt_name=playground.system_prompt_name,
+                system_prompt_content=playground.system_prompt_content,
                 created_at=playground.created_at,
                 threads=thread_outs,
             )
@@ -192,11 +246,14 @@ class PlaygroundService:
         update_tools: bool = False,
         skills: list[str] | None = None,
         update_skills: bool = False,
+        system_prompt_name: str | None = None,
+        system_prompt_content: str | None = None,
+        update_system_prompt: bool = False,
     ) -> PlaygroundOut:
         session_id = _decode_id(encoded_id, "Playground not found")
         async with self.db.session() as session:
             session_repo = SessionRepo(session)
-            playground = await session_repo.get_if_owner(session_id, user_id)
+            playground = await session_repo.get_if_owner_for_update(session_id, user_id)
             if playground is None:
                 raise PlaygroundNotFoundError("Playground not found")
             if title is not None:
@@ -205,6 +262,21 @@ class PlaygroundService:
                 playground = await session_repo.update_tools(session_id, user_id, tools)
             if update_skills:
                 playground = await session_repo.update_skills(session_id, user_id, skills)
+            if update_system_prompt:
+                if system_prompt_name is None or system_prompt_content is None:
+                    raise PlaygroundError(
+                        "System prompt name and content must be provided together"
+                    )
+                if playground.comparison_started_at is not None:
+                    raise SystemPromptLockedError(
+                        "System prompt cannot be changed after a comparison has started"
+                    )
+                playground = await session_repo.update_system_prompt(
+                    session_id,
+                    user_id,
+                    system_prompt_name,
+                    system_prompt_content,
+                )
             if playground is None:
                 raise PlaygroundNotFoundError("Playground not found")
             return PlaygroundOut(
@@ -212,6 +284,8 @@ class PlaygroundService:
                 title=playground.title,
                 tools=playground.tools_json,
                 skills=playground.skills_json,
+                system_prompt_name=playground.system_prompt_name,
+                system_prompt_content=playground.system_prompt_content,
                 created_at=playground.created_at,
             )
 
@@ -234,6 +308,7 @@ class PlaygroundService:
         skills: list[str] | None = None,
     ) -> AsyncGenerator[str, None]:
         session_id = _decode_id(encoded_id, "Playground not found")
+        await self._ensure_system_prompt_snapshot(session_id, user_id)
         threads = await self._prepare_multi_chat(
             session_id, user_id, message, models, tools, skills
         )
@@ -409,9 +484,14 @@ class PlaygroundService:
             thread_repo = ThreadRepo(session)
             model_repo = ModelRepo(session)
 
-            playground = await session_repo.get_if_owner(session_id, user_id)
+            playground = await session_repo.get_if_owner_for_update(session_id, user_id)
             if playground is None:
                 raise PlaygroundNotFoundError("Playground not found")
+            playground.comparison_started_at = (
+                playground.comparison_started_at or datetime.now(UTC)
+            )
+            prompt_content = playground.system_prompt_content
+            await session.flush()
 
             prepared: list[PreparedModelSelection] = []
             for provider, model_name, reasoning_effort in models:
@@ -444,6 +524,7 @@ class PlaygroundService:
                     title=f"{item.provider}/{item.model_name}",
                     tools=tools,
                     skills=skills,
+                    system_prompt=prompt_content,
                 )
 
         async with self.db.session() as session:
