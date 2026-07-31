@@ -12,6 +12,7 @@ from playground.ids import encode
 from playground.sessions.service import (
     MessageNotFoundError,
     ModelNotFoundError,
+    PlaygroundError,
     PlaygroundNotFoundError,
     PlaygroundService,
     RuntimeForkError,
@@ -356,6 +357,36 @@ async def test_service_creates_and_lists_playgrounds_with_total(db: Database) ->
     assert listed.total == 1
     assert listed.sessions[0].id == created.id
     assert listed.sessions[0].system_prompt_content is None
+
+
+async def test_service_persists_single_playground_mode(db: Database) -> None:
+    user = await create_user(db)
+    service = PlaygroundService(db, FakeRuntime())
+
+    created = await service.create_playground(user.id, "Focused experiment", mode="single")
+    listed = await service.list_playgrounds(user.id, limit=20, offset=0)
+    detail = await service.get_playground(created.id, user.id)
+
+    assert created.mode == "single"
+    assert listed.sessions[0].mode == "single"
+    assert detail.mode == "single"
+
+
+async def test_single_playground_rejects_multiple_models(db: Database) -> None:
+    user = await create_user(db)
+    service = PlaygroundService(db, FakeRuntime())
+    created = await service.create_playground(user.id, "Focused experiment", mode="single")
+
+    with pytest.raises(PlaygroundError, match="exactly one model"):
+        await service.stream_multi_chat(
+            created.id,
+            user.id,
+            "Explain this",
+            [
+                ("openai", "gpt-test", None),
+                ("openai", "gpt-test", "medium"),
+            ],
+        )
 
 
 async def test_service_persists_system_prompt_snapshot(db: Database) -> None:

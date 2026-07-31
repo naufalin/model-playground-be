@@ -24,6 +24,7 @@ from playground.sessions.schemas import (
     MessageOut,
     PlaygroundDetail,
     PlaygroundListOut,
+    PlaygroundMode,
     PlaygroundOut,
     ThreadOut,
 )
@@ -95,6 +96,7 @@ class PlaygroundService:
         self,
         user_id: int,
         title: str,
+        mode: PlaygroundMode = "compare",
         tools: list[str] | None = None,
         skills: list[str] | None = None,
         system_prompt_name: str | None = None,
@@ -109,6 +111,7 @@ class PlaygroundService:
             playground = await session_repo.create(
                 user_id=user_id,
                 title=title,
+                mode=mode,
                 tools=tools,
                 skills=skills,
                 system_prompt_name=system_prompt_name,
@@ -117,6 +120,7 @@ class PlaygroundService:
             return PlaygroundOut(
                 id=encode(playground.id),
                 title=playground.title,
+                mode=playground.mode,
                 tools=playground.tools_json,
                 skills=playground.skills_json,
                 system_prompt_name=playground.system_prompt_name,
@@ -166,6 +170,7 @@ class PlaygroundService:
                 PlaygroundOut(
                     id=encode(s.id),
                     title=s.title,
+                    mode=s.mode,
                     tools=s.tools_json,
                     skills=s.skills_json,
                     system_prompt_name=s.system_prompt_name,
@@ -230,6 +235,7 @@ class PlaygroundService:
             return PlaygroundDetail(
                 id=encode(playground.id),
                 title=playground.title,
+                mode=playground.mode,
                 tools=playground.tools_json,
                 skills=playground.skills_json,
                 system_prompt_name=playground.system_prompt_name,
@@ -283,6 +289,7 @@ class PlaygroundService:
             return PlaygroundOut(
                 id=encode(playground.id),
                 title=playground.title,
+                mode=playground.mode,
                 tools=playground.tools_json,
                 skills=playground.skills_json,
                 system_prompt_name=playground.system_prompt_name,
@@ -496,6 +503,8 @@ class PlaygroundService:
             playground = await session_repo.get_if_owner_for_update(session_id, user_id)
             if playground is None:
                 raise PlaygroundNotFoundError("Playground not found")
+            if playground.mode == "single" and len(models) != 1:
+                raise PlaygroundError("Single-mode playgrounds require exactly one model")
             playground.comparison_started_at = (
                 playground.comparison_started_at or datetime.now(UTC)
             )

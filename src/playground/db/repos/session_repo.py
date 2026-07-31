@@ -14,6 +14,7 @@ class SessionRepo:
         self,
         user_id: int,
         title: str = "New Playground",
+        mode: str = "compare",
         tools: list[str] | None = None,
         skills: list[str] | None = None,
         system_prompt_name: str | None = None,
@@ -22,6 +23,7 @@ class SessionRepo:
         sess = PlaygroundSession(
             user_id=user_id,
             title=title,
+            mode=mode,
             tools_json=tools,
             skills_json=skills,
             system_prompt_name=system_prompt_name,

@@ -49,6 +49,7 @@ async def create_playground(
     return await service.create_playground(
         user_id=user.id,
         title=body.title,
+        mode=body.mode,
         tools=body.tools,
         skills=body.skills,
         system_prompt_name=body.system_prompt_name,

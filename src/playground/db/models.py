@@ -62,6 +62,7 @@ class PlaygroundSession(Base):
         Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
     title: Mapped[str] = mapped_column(String(255), default="New Playground")
+    mode: Mapped[str] = mapped_column(String(16), default="compare", server_default="compare")
     tools_json: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     skills_json: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     system_prompt_name: Mapped[str | None] = mapped_column(String(100), nullable=True)

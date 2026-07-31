@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+PlaygroundMode = Literal["single", "compare"]
 
 
 class PlaygroundCreate(BaseModel):
     title: str = Field(default="New Playground", min_length=1, max_length=255)
+    mode: PlaygroundMode = "compare"
     tools: list[str] | None = Field(default=None, max_length=32)
     skills: list[str] | None = Field(default=None, max_length=32)
     system_prompt_name: str | None = Field(default=None, min_length=1, max_length=100)
@@ -42,6 +45,7 @@ class PlaygroundUpdate(BaseModel):
 class PlaygroundOut(BaseModel):
     id: str
     title: str
+    mode: PlaygroundMode
     tools: list[str] | None = None
     skills: list[str] | None = None
     system_prompt_name: str | None = None
@@ -93,6 +97,7 @@ class ThreadOut(BaseModel):
 class PlaygroundDetail(BaseModel):
     id: str
     title: str
+    mode: PlaygroundMode
     tools: list[str] | None = None
     skills: list[str] | None = None
     system_prompt_name: str | None = None
