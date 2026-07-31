@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 
 import pytest
@@ -128,6 +129,19 @@ class ErrorRuntime(FakeRuntime):
     async def chat_stream(self, session_id: str, message: str, **kwargs):
         raise RuntimeError("runtime failed")
         yield
+
+
+class PartialBlockingRuntime(FakeRuntime):
+    def __init__(self) -> None:
+        super().__init__()
+        self.cancelled = asyncio.Event()
+
+    async def chat_stream(self, session_id: str, message: str, **kwargs):
+        try:
+            yield {"type": "text_delta", "delta": "partial answer"}
+            await asyncio.Event().wait()
+        finally:
+            self.cancelled.set()
 
 
 class ForkErrorRuntime(FakeRuntime):
@@ -608,6 +622,36 @@ async def test_multi_chat_persists_messages_before_all_done(db: Database) -> Non
     assert saw_all_done
 
 
+async def test_closing_multi_chat_cancels_runtime_and_persists_partial_output(
+    db: Database,
+) -> None:
+    user = await create_user(db)
+    model = await create_model(db)
+    playground = await create_session(db, user.id)
+    runtime = PartialBlockingRuntime()
+    service = PlaygroundService(db, runtime)
+    stream = await service.stream_multi_chat(
+        encode(playground.id),
+        user.id,
+        "hello",
+        [(model.provider, model.model_name, None)],
+    )
+
+    while True:
+        chunk = await anext(stream)
+        if '"type": "text_delta"' in chunk:
+            break
+    await stream.aclose()
+
+    async with db.session() as session:
+        threads = await ThreadRepo(session).get_by_session(playground.id)
+        assistant = [message for message in threads[0].messages if message.role == "assistant"][-1]
+
+    assert runtime.cancelled.is_set()
+    assert assistant.content == "partial answer"
+    assert assistant.usage_json["cancelled"] is True
+
+
 async def test_multi_chat_persists_markup_tool_name_without_overflow(db: Database) -> None:
     user = await create_user(db)
     model = await create_model(db)
@@ -755,6 +799,45 @@ async def test_single_chat_adds_ttft_when_runtime_usage_omits_it(db: Database) -
     assert assistant.usage_json["perf"]["ttft_ms"] >= 0
     assert '"perf": {"ttft_ms":' in "".join(chunks)
     assert service.runtime.chat_tools == [["web_search"]]
+
+
+async def test_closing_single_chat_cancels_runtime_and_persists_partial_output(
+    db: Database,
+) -> None:
+    user = await create_user(db)
+    playground = await create_session(db, user.id)
+    async with db.session() as session:
+        thread = ModelThread(
+            playground_session_id=playground.id,
+            provider="openai",
+            model_name="gpt-test",
+            runtime_session_id="runtime-existing",
+        )
+        session.add(thread)
+        await session.flush()
+        thread_id = thread.id
+
+    runtime = PartialBlockingRuntime()
+    service = PlaygroundService(db, runtime)
+    stream = await service.stream_single_chat(
+        encode(playground.id),
+        encode(thread_id),
+        user.id,
+        "hello",
+    )
+
+    assert '"type": "thread_start"' in await anext(stream)
+    assert '"type": "text_delta"' in await anext(stream)
+    await stream.aclose()
+
+    async with db.session() as session:
+        stored = await ThreadRepo(session).get(thread_id)
+        assert stored is not None
+        assistant = [message for message in stored.messages if message.role == "assistant"][-1]
+
+    assert runtime.cancelled.is_set()
+    assert assistant.content == "partial answer"
+    assert assistant.usage_json["cancelled"] is True
 
 
 async def test_single_chat_emits_error_event_when_runtime_fails(db: Database) -> None:

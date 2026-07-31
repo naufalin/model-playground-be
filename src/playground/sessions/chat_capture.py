@@ -115,6 +115,14 @@ class ChatThreadCapture:
         self.observe(event)
         return event
 
+    def cancel(self) -> None:
+        self._done = {
+            "provider": self.thread.provider,
+            "model": self.thread.model_name,
+            "usage": {"cancelled": True},
+        }
+        self._finish()
+
     def thread_done_event(self) -> dict[str, Any]:
         self._finish()
         done = self._done or {}

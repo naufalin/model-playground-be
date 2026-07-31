@@ -48,6 +48,19 @@ def capture(clock_values: list[float] | None = None) -> ChatThreadCapture:
     )
 
 
+def test_cancel_preserves_partial_text_with_cancelled_usage() -> None:
+    thread = capture()
+    thread.observe({"type": "text_delta", "delta": "partial answer"})
+
+    thread.cancel()
+
+    assistant = thread.captured_messages()[-1]
+    assert assistant.role == "assistant"
+    assert assistant.content == "partial answer"
+    assert assistant.usage_json is not None
+    assert assistant.usage_json["cancelled"] is True
+
+
 def test_capture_accumulates_text_and_prefers_done_content() -> None:
     thread = capture([0, 0.1, 0.2, 0.3])
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
@@ -331,22 +332,27 @@ class PlaygroundService:
                 for thread, reasoning_effort in threads
             }
 
-            async for event in fanout_chat(self.runtime, threads, message, tools, skills):
-                capture = captures.get(event.get("thread_id"))
-                if capture is None or event.get("type") == "thread_start":
-                    yield _sse(event)
-                    continue
+            try:
+                async for event in fanout_chat(self.runtime, threads, message, tools, skills):
+                    capture = captures.get(event.get("thread_id"))
+                    if capture is None or event.get("type") == "thread_start":
+                        yield _sse(event)
+                        continue
 
-                observed = capture.observe(event)
-                if event.get("type") == "done":
-                    yield _sse(capture.thread_done_event())
-                elif observed is not None:
-                    yield _sse(observed)
-
-            async with self.db.session() as session:
-                thread_repo = ThreadRepo(session)
+                    observed = capture.observe(event)
+                    if event.get("type") == "done":
+                        yield _sse(capture.thread_done_event())
+                    elif observed is not None:
+                        yield _sse(observed)
+            except (GeneratorExit, asyncio.CancelledError):
                 for capture in captures.values():
-                    await _persist_captured_messages(thread_repo, capture.thread.id, capture)
+                    capture.cancel()
+                raise
+            finally:
+                async with self.db.session() as session:
+                    thread_repo = ThreadRepo(session)
+                    for capture in captures.values():
+                        await _persist_captured_messages(thread_repo, capture.thread.id, capture)
 
             yield _sse({"type": "all_done"})
 
@@ -459,10 +465,13 @@ class PlaygroundService:
             except Exception as exc:
                 failed = True
                 yield _sse(capture.error_event(exc))
-
-            async with self.db.session() as session:
-                thread_repo = ThreadRepo(session)
-                await _persist_captured_messages(thread_repo, thread.id, capture)
+            except (GeneratorExit, asyncio.CancelledError):
+                capture.cancel()
+                raise
+            finally:
+                async with self.db.session() as session:
+                    thread_repo = ThreadRepo(session)
+                    await _persist_captured_messages(thread_repo, thread.id, capture)
 
             if not failed:
                 yield _sse(capture.thread_done_event())

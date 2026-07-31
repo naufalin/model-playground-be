@@ -57,16 +57,22 @@ async def fanout_chat(
         asyncio.create_task(_pump(thread, reasoning_effort))
         for thread, reasoning_effort in threads
     ]
-    remaining = len(tasks)
+    try:
+        remaining = len(tasks)
 
-    while remaining > 0:
-        item = await queue.get()
-        if item.get("type") == "_thread_finished":
-            remaining -= 1
-            continue
-        yield item
-
-    while not queue.empty():
-        item = queue.get_nowait()
-        if item.get("type") != "_thread_finished":
+        while remaining > 0:
+            item = await queue.get()
+            if item.get("type") == "_thread_finished":
+                remaining -= 1
+                continue
             yield item
+
+        while not queue.empty():
+            item = queue.get_nowait()
+            if item.get("type") != "_thread_finished":
+                yield item
+    finally:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
