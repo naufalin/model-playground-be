@@ -65,6 +65,7 @@ class PlaygroundSession(Base):
     mode: Mapped[str] = mapped_column(String(16), default="compare", server_default="compare")
     tools_json: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     skills_json: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    orchestration_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     system_prompt_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
     system_prompt_content: Mapped[str | None] = mapped_column(Text, nullable=True)
     comparison_started_at: Mapped[datetime | None] = mapped_column(

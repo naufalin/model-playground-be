@@ -16,6 +16,7 @@ from playground.prompts.router import router as prompts_router
 from playground.runtime.client import AgentRuntimeClient
 from playground.sessions.router import router as playground_router
 from playground.skills.router import router as skills_router
+from playground.specialists.router import router as specialists_router
 from playground.tools.router import router as tools_router
 
 
@@ -72,6 +73,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(pricing_router)
     app.include_router(tools_router)
     app.include_router(skills_router)
+    app.include_router(specialists_router)
     app.include_router(playground_router)
 
     @app.get("/")

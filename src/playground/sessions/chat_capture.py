@@ -99,7 +99,7 @@ class ChatThreadCapture:
                 self._text += delta
                 _append_timeline_event(self._timeline, event)
 
-        if event_type in {"thinking_delta", "tool_start", "tool_end"}:
+        if event_type in {"thinking_delta", "tool_start", "tool_end", "agent_start", "agent_end"}:
             _append_timeline_event(self._timeline, event)
 
         if event_type == "error":
@@ -183,11 +183,7 @@ class ChatThreadCapture:
                     "thinking": done.get("thinking"),
                 }
                 first_text_index = next(
-                    (
-                        index
-                        for index, event in enumerate(timeline)
-                        if event.get("type") == "text"
-                    ),
+                    (index for index, event in enumerate(timeline) if event.get("type") == "text"),
                     len(timeline),
                 )
                 timeline.insert(first_text_index, thinking_event)
@@ -413,6 +409,37 @@ def _append_timeline_event(timeline: list[dict[str, Any]], event: dict[str, Any]
             timeline.append({"type": "skill", "content": skill})
         return
 
+    if event_type == "agent_start":
+        timeline.append(
+            {
+                "type": "agent",
+                "status": "running",
+                "agent": event.get("agent"),
+                "call_id": event.get("call_id"),
+                "input": event.get("input"),
+            }
+        )
+        return
+
+    if event_type == "agent_end":
+        matching = next(
+            (
+                item
+                for item in reversed(timeline)
+                if item.get("type") == "agent" and item.get("call_id") == event.get("call_id")
+            ),
+            None,
+        )
+        if matching is None:
+            matching = {
+                "type": "agent",
+                "agent": event.get("agent"),
+                "call_id": event.get("call_id"),
+            }
+            timeline.append(matching)
+        matching.update(status="complete", output_preview=event.get("output_preview"))
+        return
+
     if event_type == "error":
         error = event.get("error")
         if isinstance(error, str) and error:
@@ -500,6 +527,19 @@ def _timeline_message(
         return CapturedMessage(
             role=str(event["type"]),
             content=str(event.get("content") or ""),
+            **common,
+        )
+
+    if event.get("type") == "agent":
+        is_complete = event.get("status") == "complete"
+        agent_name = str(event.get("agent") or "specialist")
+        preview = event.get("output_preview") if is_complete else None
+        return CapturedMessage(
+            role="agent",
+            content=f"{agent_name} completed" if is_complete else f"Delegating to {agent_name}",
+            tool_call_id=event.get("call_id"),
+            tool_input=event.get("input"),
+            output_preview=preview,
             **common,
         )
 

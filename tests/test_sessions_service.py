@@ -4,11 +4,13 @@ import asyncio
 import json
 
 import pytest
+from pydantic import ValidationError
 
 from playground.db.connection import Database
 from playground.db.models import Base, LlmModel, ModelThread, PlaygroundSession, User
 from playground.db.repos.thread_repo import ThreadRepo
 from playground.ids import encode
+from playground.sessions.schemas import PlaygroundCreate
 from playground.sessions.service import (
     MessageNotFoundError,
     ModelNotFoundError,
@@ -438,15 +440,9 @@ async def test_service_preserves_session_skill_states(db: Database) -> None:
     user = await create_user(db)
     service = PlaygroundService(db, FakeRuntime())
 
-    created = await service.create_playground(
-        user.id, "Skilled", skills=["debugger"]
-    )
-    disabled = await service.update_playground(
-        created.id, user.id, skills=[], update_skills=True
-    )
-    defaults = await service.update_playground(
-        created.id, user.id, skills=None, update_skills=True
-    )
+    created = await service.create_playground(user.id, "Skilled", skills=["debugger"])
+    disabled = await service.update_playground(created.id, user.id, skills=[], update_skills=True)
+    defaults = await service.update_playground(created.id, user.id, skills=None, update_skills=True)
 
     assert created.skills == ["debugger"]
     assert disabled.skills == []
@@ -1054,3 +1050,41 @@ async def test_regenerated_chat_rejects_assistant_messages(db: Database) -> None
         )
 
     assert runtime.fork_calls == []
+
+
+async def test_single_playground_snapshots_specialist_configuration(db: Database) -> None:
+    user = await create_user(db)
+    service = PlaygroundService(db, FakeRuntime())
+    snapshot = {
+        "specialists": [
+            {
+                "name": "researcher",
+                "description": "Research evidence",
+                "instructions": "Use evidence.",
+                "provider": None,
+                "model": None,
+                "reasoning_effort": None,
+                "tools": ["web_search"],
+                "skills": [],
+                "version": 2,
+            }
+        ]
+    }
+
+    from playground.sessions.schemas import OrchestrationSnapshot
+
+    created = await service.create_playground(
+        user.id,
+        "Orchestrated",
+        mode="single",
+        orchestration=OrchestrationSnapshot.model_validate(snapshot),
+    )
+    detail = await service.get_playground(created.id, user.id)
+
+    assert detail.orchestration is not None
+    assert detail.orchestration.specialists[0].version == 2
+
+
+def test_compare_playground_rejects_orchestration() -> None:
+    with pytest.raises(ValidationError, match="only in single mode"):
+        PlaygroundCreate.model_validate({"mode": "compare", "orchestration": {"specialists": []}})

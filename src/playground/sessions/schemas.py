@@ -8,20 +8,37 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 PlaygroundMode = Literal["single", "compare"]
 
 
+class SpecialistSnapshot(BaseModel):
+    name: str
+    description: str
+    instructions: str
+    provider: str | None = None
+    model: str | None = None
+    reasoning_effort: str | None = None
+    tools: list[str] = Field(default_factory=list)
+    skills: list[str] = Field(default_factory=list)
+    version: int = 1
+
+
+class OrchestrationSnapshot(BaseModel):
+    specialists: list[SpecialistSnapshot] = Field(default_factory=list, max_length=12)
+
+
 class PlaygroundCreate(BaseModel):
     title: str = Field(default="New Playground", min_length=1, max_length=255)
     mode: PlaygroundMode = "compare"
     tools: list[str] | None = Field(default=None, max_length=32)
     skills: list[str] | None = Field(default=None, max_length=32)
+    orchestration: OrchestrationSnapshot | None = None
     system_prompt_name: str | None = Field(default=None, min_length=1, max_length=100)
-    system_prompt_content: str | None = Field(
-        default=None, min_length=1, max_length=32_000
-    )
+    system_prompt_content: str | None = Field(default=None, min_length=1, max_length=32_000)
 
     @model_validator(mode="after")
     def validate_system_prompt_snapshot(self) -> PlaygroundCreate:
         if (self.system_prompt_name is None) != (self.system_prompt_content is None):
             raise ValueError("System prompt name and content must be provided together")
+        if self.mode != "single" and self.orchestration is not None:
+            raise ValueError("Orchestration is currently available only in single mode")
         return self
 
 
@@ -29,10 +46,9 @@ class PlaygroundUpdate(BaseModel):
     title: str | None = Field(default=None, min_length=1, max_length=255)
     tools: list[str] | None = Field(default=None, max_length=32)
     skills: list[str] | None = Field(default=None, max_length=32)
+    orchestration: OrchestrationSnapshot | None = None
     system_prompt_name: str | None = Field(default=None, min_length=1, max_length=100)
-    system_prompt_content: str | None = Field(
-        default=None, min_length=1, max_length=32_000
-    )
+    system_prompt_content: str | None = Field(default=None, min_length=1, max_length=32_000)
 
     @model_validator(mode="after")
     def validate_system_prompt_snapshot(self) -> PlaygroundUpdate:
@@ -48,6 +64,7 @@ class PlaygroundOut(BaseModel):
     mode: PlaygroundMode
     tools: list[str] | None = None
     skills: list[str] | None = None
+    orchestration: OrchestrationSnapshot | None = None
     system_prompt_name: str | None = None
     system_prompt_content: str | None = None
     created_at: datetime | None = None
@@ -100,6 +117,7 @@ class PlaygroundDetail(BaseModel):
     mode: PlaygroundMode
     tools: list[str] | None = None
     skills: list[str] | None = None
+    orchestration: OrchestrationSnapshot | None = None
     system_prompt_name: str | None = None
     system_prompt_content: str | None = None
     created_at: datetime | None = None

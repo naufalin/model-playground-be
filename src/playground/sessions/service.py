@@ -99,13 +99,12 @@ class PlaygroundService:
         mode: PlaygroundMode = "compare",
         tools: list[str] | None = None,
         skills: list[str] | None = None,
+        orchestration=None,
         system_prompt_name: str | None = None,
         system_prompt_content: str | None = None,
     ) -> PlaygroundOut:
         if system_prompt_name is None or system_prompt_content is None:
-            system_prompt_name, system_prompt_content = (
-                await self._get_default_system_prompt()
-            )
+            system_prompt_name, system_prompt_content = await self._get_default_system_prompt()
         async with self.db.session() as session:
             session_repo = SessionRepo(session)
             playground = await session_repo.create(
@@ -114,6 +113,7 @@ class PlaygroundService:
                 mode=mode,
                 tools=tools,
                 skills=skills,
+                orchestration=orchestration.model_dump() if orchestration else None,
                 system_prompt_name=system_prompt_name,
                 system_prompt_content=system_prompt_content,
             )
@@ -123,6 +123,7 @@ class PlaygroundService:
                 mode=playground.mode,
                 tools=playground.tools_json,
                 skills=playground.skills_json,
+                orchestration=playground.orchestration_json,
                 system_prompt_name=playground.system_prompt_name,
                 system_prompt_content=playground.system_prompt_content,
                 created_at=playground.created_at,
@@ -173,6 +174,7 @@ class PlaygroundService:
                     mode=s.mode,
                     tools=s.tools_json,
                     skills=s.skills_json,
+                    orchestration=s.orchestration_json,
                     system_prompt_name=s.system_prompt_name,
                     created_at=s.created_at,
                 )
@@ -238,6 +240,7 @@ class PlaygroundService:
                 mode=playground.mode,
                 tools=playground.tools_json,
                 skills=playground.skills_json,
+                orchestration=playground.orchestration_json,
                 system_prompt_name=playground.system_prompt_name,
                 system_prompt_content=playground.system_prompt_content,
                 created_at=playground.created_at,
@@ -253,6 +256,8 @@ class PlaygroundService:
         update_tools: bool = False,
         skills: list[str] | None = None,
         update_skills: bool = False,
+        orchestration=None,
+        update_orchestration: bool = False,
         system_prompt_name: str | None = None,
         system_prompt_content: str | None = None,
         update_system_prompt: bool = False,
@@ -269,6 +274,20 @@ class PlaygroundService:
                 playground = await session_repo.update_tools(session_id, user_id, tools)
             if update_skills:
                 playground = await session_repo.update_skills(session_id, user_id, skills)
+            if update_orchestration:
+                if playground.mode != "single":
+                    raise PlaygroundError(
+                        "Orchestration is currently available only in single mode"
+                    )
+                if playground.comparison_started_at is not None:
+                    raise PlaygroundError(
+                        "Specialist configuration cannot be changed after a playground starts"
+                    )
+                playground = await session_repo.update_orchestration(
+                    session_id,
+                    user_id,
+                    orchestration.model_dump() if orchestration else None,
+                )
             if update_system_prompt:
                 if system_prompt_name is None or system_prompt_content is None:
                     raise PlaygroundError(
@@ -292,6 +311,7 @@ class PlaygroundService:
                 mode=playground.mode,
                 tools=playground.tools_json,
                 skills=playground.skills_json,
+                orchestration=playground.orchestration_json,
                 system_prompt_name=playground.system_prompt_name,
                 system_prompt_content=playground.system_prompt_content,
                 created_at=playground.created_at,
@@ -515,9 +535,7 @@ class PlaygroundService:
                     raise PlaygroundError(
                         "The model is locked after a Single-mode playground starts"
                     )
-            playground.comparison_started_at = (
-                playground.comparison_started_at or datetime.now(UTC)
-            )
+            playground.comparison_started_at = playground.comparison_started_at or datetime.now(UTC)
             prompt_content = playground.system_prompt_content
             await session.flush()
 
@@ -548,12 +566,15 @@ class PlaygroundService:
                 continue
             key = (item.provider, item.model_name)
             if key not in runtime_session_ids:
-                runtime_session_ids[key] = await self.runtime.create_session(
-                    title=f"{item.provider}/{item.model_name}",
-                    tools=tools,
-                    skills=skills,
-                    system_prompt=prompt_content,
-                )
+                create_options = {
+                    "title": f"{item.provider}/{item.model_name}",
+                    "tools": tools,
+                    "skills": skills,
+                    "system_prompt": prompt_content,
+                }
+                if playground.orchestration_json is not None:
+                    create_options["orchestration"] = playground.orchestration_json
+                runtime_session_ids[key] = await self.runtime.create_session(**create_options)
 
         async with self.db.session() as session:
             thread_repo = ThreadRepo(session)

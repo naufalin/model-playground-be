@@ -17,6 +17,7 @@ class SessionRepo:
         mode: str = "compare",
         tools: list[str] | None = None,
         skills: list[str] | None = None,
+        orchestration: dict | None = None,
         system_prompt_name: str | None = None,
         system_prompt_content: str | None = None,
     ) -> PlaygroundSession:
@@ -26,6 +27,7 @@ class SessionRepo:
             mode=mode,
             tools_json=tools,
             skills_json=skills,
+            orchestration_json=orchestration,
             system_prompt_name=system_prompt_name,
             system_prompt_content=system_prompt_content,
         )
@@ -62,9 +64,9 @@ class SessionRepo:
 
     async def count_by_user(self, user_id: int) -> int:
         result = await self.session.execute(
-            select(func.count()).select_from(PlaygroundSession).where(
-                PlaygroundSession.user_id == user_id
-            )
+            select(func.count())
+            .select_from(PlaygroundSession)
+            .where(PlaygroundSession.user_id == user_id)
         )
         return result.scalar_one()
 
@@ -142,6 +144,14 @@ class SessionRepo:
         if sess is None:
             return None
         sess.skills_json = skills
+        await self.session.flush()
+        return sess
+
+    async def update_orchestration(self, session_id: int, user_id: int, orchestration: dict | None):
+        sess = await self.get_if_owner(session_id, user_id)
+        if sess is None:
+            return None
+        sess.orchestration_json = orchestration
         await self.session.flush()
         return sess
 

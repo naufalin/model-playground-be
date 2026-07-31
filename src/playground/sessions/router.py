@@ -52,6 +52,7 @@ async def create_playground(
         mode=body.mode,
         tools=body.tools,
         skills=body.skills,
+        orchestration=body.orchestration,
         system_prompt_name=body.system_prompt_name,
         system_prompt_content=body.system_prompt_content,
     )
@@ -95,11 +96,12 @@ async def update_playground(
             update_tools="tools" in body.model_fields_set,
             skills=body.skills,
             update_skills="skills" in body.model_fields_set,
+            orchestration=body.orchestration,
+            update_orchestration="orchestration" in body.model_fields_set,
             system_prompt_name=body.system_prompt_name,
             system_prompt_content=body.system_prompt_content,
             update_system_prompt=bool(
-                {"system_prompt_name", "system_prompt_content"}
-                & body.model_fields_set
+                {"system_prompt_name", "system_prompt_content"} & body.model_fields_set
             ),
         )
     except PlaygroundError as exc:

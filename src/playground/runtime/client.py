@@ -71,6 +71,25 @@ class AgentRuntimeClient:
         resp.raise_for_status()
         return resp.json()
 
+    async def list_specialists(self) -> dict[str, Any]:
+        resp = await self.client.get("/specialists")
+        resp.raise_for_status()
+        return resp.json()
+
+    async def create_specialist(self, payload: dict[str, Any]) -> dict[str, Any]:
+        resp = await self.client.post("/specialists", json=payload)
+        resp.raise_for_status()
+        return resp.json()
+
+    async def update_specialist(self, name: str, payload: dict[str, Any]) -> dict[str, Any]:
+        resp = await self.client.patch(f"/specialists/{name}", json=payload)
+        resp.raise_for_status()
+        return resp.json()
+
+    async def delete_specialist(self, name: str) -> None:
+        resp = await self.client.delete(f"/specialists/{name}")
+        resp.raise_for_status()
+
     async def list_prompts(self) -> dict[str, Any]:
         """Return the reusable system-prompt catalog."""
         resp = await self.client.get("/prompts")
@@ -108,11 +127,14 @@ class AgentRuntimeClient:
         tools: list[str] | None = None,
         skills: list[str] | None = None,
         system_prompt: str | None = None,
+        orchestration: dict[str, Any] | None = None,
     ) -> str:
         """Create a new runtime session and return its encoded ID."""
         payload = {"title": title, "tools": tools, "skills": skills}
         if system_prompt is not None:
             payload["system_prompt"] = system_prompt
+        if orchestration is not None:
+            payload["orchestration"] = orchestration
         resp = await self.client.post("/sessions", json=payload)
         resp.raise_for_status()
         data = resp.json()
