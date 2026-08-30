@@ -64,6 +64,11 @@ class PlaygroundSession(Base):
     title: Mapped[str] = mapped_column(String(255), default="New Playground")
     mode: Mapped[str] = mapped_column(String(16), default="compare", server_default="compare")
     tools_json: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    # Enabled MCP server IDs for newly created model threads.  This is a
+    # product-owned allowlist; the runtime owns the corresponding URLs.
+    mcp_servers_json: Mapped[list[str]] = mapped_column(
+        JSON, nullable=False, default=list, server_default="[]"
+    )
     skills_json: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     orchestration_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     system_prompt_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
@@ -103,6 +108,15 @@ class ModelThread(Base):
     provider: Mapped[str] = mapped_column(String(50), nullable=False)
     model_name: Mapped[str] = mapped_column(String(200), nullable=False)
     runtime_session_id: Mapped[str] = mapped_column(String(50), nullable=False)
+    # Immutable MCP configuration captured when the runtime session/thread is
+    # first created.  Legacy rows are initialized to empty lists by the
+    # migration and service fallback paths.
+    mcp_servers_json: Mapped[list[str]] = mapped_column(
+        JSON, nullable=False, default=list, server_default="[]"
+    )
+    mcp_tools_json: Mapped[list[str]] = mapped_column(
+        JSON, nullable=False, default=list, server_default="[]"
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     playground_session: Mapped["PlaygroundSession"] = relationship(back_populates="threads")

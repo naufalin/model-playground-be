@@ -3,6 +3,7 @@
 import json
 from collections.abc import AsyncGenerator
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -62,6 +63,19 @@ class AgentRuntimeClient:
     async def list_tools(self) -> dict[str, Any]:
         """Return the runtime tool registry payload."""
         resp = await self.client.get("/tools")
+        resp.raise_for_status()
+        return resp.json()
+
+    async def list_mcp_servers(self) -> dict[str, Any]:
+        """Return the runtime's approved MCP server catalog."""
+        resp = await self.client.get("/mcp/servers")
+        resp.raise_for_status()
+        return resp.json()
+
+    async def list_mcp_server_tools(self, server_id: str) -> dict[str, Any]:
+        """Run a discovery check and return one MCP server's tool catalog."""
+        encoded_server_id = quote(server_id, safe="")
+        resp = await self.client.get(f"/mcp/servers/{encoded_server_id}/tools")
         resp.raise_for_status()
         return resp.json()
 
@@ -128,9 +142,12 @@ class AgentRuntimeClient:
         skills: list[str] | None = None,
         system_prompt: str | None = None,
         orchestration: dict[str, Any] | None = None,
+        mcp_servers: list[str] | None = None,
     ) -> str:
         """Create a new runtime session and return its encoded ID."""
         payload = {"title": title, "tools": tools, "skills": skills}
+        if mcp_servers is not None:
+            payload["mcp_servers"] = list(mcp_servers)
         if system_prompt is not None:
             payload["system_prompt"] = system_prompt
         if orchestration is not None:

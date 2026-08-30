@@ -16,6 +16,7 @@ class SessionRepo:
         title: str = "New Playground",
         mode: str = "compare",
         tools: list[str] | None = None,
+        mcp_servers: list[str] | None = None,
         skills: list[str] | None = None,
         orchestration: dict | None = None,
         system_prompt_name: str | None = None,
@@ -26,12 +27,28 @@ class SessionRepo:
             title=title,
             mode=mode,
             tools_json=tools,
+            mcp_servers_json=list(mcp_servers or []),
             skills_json=skills,
             orchestration_json=orchestration,
             system_prompt_name=system_prompt_name,
             system_prompt_content=system_prompt_content,
         )
         self.session.add(sess)
+        await self.session.flush()
+        return sess
+
+    async def update_mcp_servers(
+        self,
+        session_id: int,
+        user_id: int,
+        mcp_servers: list[str],
+    ) -> PlaygroundSession | None:
+        """Update the MCP defaults for future model threads."""
+
+        sess = await self.get_if_owner(session_id, user_id)
+        if sess is None:
+            return None
+        sess.mcp_servers_json = list(mcp_servers)
         await self.session.flush()
         return sess
 

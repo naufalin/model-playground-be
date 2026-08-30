@@ -39,6 +39,8 @@ uv run uvicorn playground.app:app --reload --port 8080
 | GET | `/auth/me` | Current user |
 | GET | `/models` | List available LLMs |
 | POST | `/models/sync` | Sync model metadata from the agent runtime |
+| GET | `/mcp/servers` | List approved MCP servers |
+| GET | `/mcp/servers/{id}/tools` | Check MCP server tools |
 | GET | `/pricing/models` | Normalized OpenAI and OpenRouter pricing catalog |
 | POST | `/playground` | Create session |
 | GET | `/playground` | List sessions |
@@ -47,6 +49,9 @@ uv run uvicorn playground.app:app --reload --port 8080
 | DELETE | `/playground/{id}` | Delete session |
 | POST | `/playground/{id}/chat` | Fan-out to N models with reasoning/perf/tool metadata (SSE) |
 | POST | `/playground/{id}/chat/{thread_id}` | Continue single thread with enriched SSE |
+
+See [docs/MCP.md](docs/MCP.md) for MCP selection, discovery, and immutable
+thread snapshot semantics.
 
 ## Project Structure
 
@@ -61,6 +66,7 @@ src/playground/
 ├── models/            # GET /models endpoint
 ├── pricing/           # Catalog normalization + response estimates
 ├── sessions/          # CRUD + chat service + fanout streaming
+├── mcp/               # Approved MCP catalog proxy + selection helpers
 └── runtime/           # Agent runtime HTTP client
 ```
 

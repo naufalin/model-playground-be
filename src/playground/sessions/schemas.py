@@ -28,6 +28,7 @@ class PlaygroundCreate(BaseModel):
     title: str = Field(default="New Playground", min_length=1, max_length=255)
     mode: PlaygroundMode = "compare"
     tools: list[str] | None = Field(default=None, max_length=32)
+    mcp_servers: list[str] = Field(default_factory=list, max_length=3)
     skills: list[str] | None = Field(default=None, max_length=32)
     orchestration: OrchestrationSnapshot | None = None
     system_prompt_name: str | None = Field(default=None, min_length=1, max_length=100)
@@ -45,6 +46,7 @@ class PlaygroundCreate(BaseModel):
 class PlaygroundUpdate(BaseModel):
     title: str | None = Field(default=None, min_length=1, max_length=255)
     tools: list[str] | None = Field(default=None, max_length=32)
+    mcp_servers: list[str] = Field(default_factory=list, max_length=3)
     skills: list[str] | None = Field(default=None, max_length=32)
     orchestration: OrchestrationSnapshot | None = None
     system_prompt_name: str | None = Field(default=None, min_length=1, max_length=100)
@@ -63,6 +65,7 @@ class PlaygroundOut(BaseModel):
     title: str
     mode: PlaygroundMode
     tools: list[str] | None = None
+    mcp_servers: list[str] = Field(default_factory=list)
     skills: list[str] | None = None
     orchestration: OrchestrationSnapshot | None = None
     system_prompt_name: str | None = None
@@ -106,6 +109,8 @@ class ThreadOut(BaseModel):
     provider: str
     model_name: str
     display_name: str
+    mcp_servers: list[str] = Field(default_factory=list)
+    mcp_tools: list[str] = Field(default_factory=list)
     messages: list[MessageOut] = Field(default_factory=list)
 
     model_config = ConfigDict(from_attributes=True)
@@ -116,6 +121,7 @@ class PlaygroundDetail(BaseModel):
     title: str
     mode: PlaygroundMode
     tools: list[str] | None = None
+    mcp_servers: list[str] = Field(default_factory=list)
     skills: list[str] | None = None
     orchestration: OrchestrationSnapshot | None = None
     system_prompt_name: str | None = None

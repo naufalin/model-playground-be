@@ -1,5 +1,7 @@
 """Model thread and message repository."""
 
+from typing import Any
+
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -18,6 +20,8 @@ class ThreadRepo:
         model_name: str,
         runtime_session_id: str,
         model_id: int | None = None,
+        mcp_servers: list[str] | None = None,
+        mcp_tools: list[str] | None = None,
     ) -> ModelThread:
         thread = ModelThread(
             playground_session_id=playground_session_id,
@@ -25,10 +29,34 @@ class ThreadRepo:
             provider=provider,
             model_name=model_name,
             runtime_session_id=runtime_session_id,
+            mcp_servers_json=list(mcp_servers or []),
+            mcp_tools_json=list(mcp_tools or []),
         )
         self.session.add(thread)
         await self.session.flush()
         return thread
+
+    async def ensure_mcp_snapshot(self, thread: ModelThread) -> None:
+        """Initialize nullable MCP fields on rows created before MCP support."""
+
+        changed = False
+        if thread.mcp_servers_json is None:
+            thread.mcp_servers_json = []
+            changed = True
+        if thread.mcp_tools_json is None:
+            thread.mcp_tools_json = []
+            changed = True
+        if changed:
+            await self.session.flush()
+
+    async def ensure_mcp_snapshot_for_session(self, playground_session_id: int) -> None:
+        """Initialize MCP fields for all legacy threads in one transaction."""
+
+        result = await self.session.execute(
+            select(ModelThread).where(ModelThread.playground_session_id == playground_session_id)
+        )
+        for thread in result.scalars().all():
+            await self.ensure_mcp_snapshot(thread)
 
     async def get_by_session(self, playground_session_id: int) -> list[ModelThread]:
         """Get all threads for a playground session, with messages ordered by creation."""
@@ -122,7 +150,7 @@ class ThreadRepo:
         target_message_id: int,
         runtime_session_id: str,
         content: str,
-        request_options_json: dict[str, str],
+        request_options_json: dict[str, Any],
     ) -> ModelThread:
         """Point a thread at a fork and replace the target user turn onward."""
         await self.session.execute(

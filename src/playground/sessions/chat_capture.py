@@ -21,7 +21,7 @@ class ChatThreadInfo:
     encoded_id: str
     provider: str
     model_name: str
-    request_options: dict[str, str]
+    request_options: dict[str, Any]
 
 
 @dataclass(frozen=True)
@@ -38,7 +38,7 @@ class CapturedMessage:
     model: str | None = None
     usage_json: dict[str, Any] | None = None
     thinking_json: dict[str, Any] | None = None
-    request_options_json: dict[str, str] | None = None
+    request_options_json: dict[str, Any] | None = None
     output_delta_count: int | None = None
     selected_skill: str | None = None
     turn_id: str | None = None
@@ -247,10 +247,17 @@ def _request_options(
     provider: str,
     model_name: str,
     reasoning_effort: str | None,
-) -> dict[str, str]:
+    *,
+    mcp_servers: list[str] | None = None,
+    mcp_tools: list[str] | None = None,
+) -> dict[str, Any]:
     options = {"provider": provider, "model": model_name}
     if reasoning_effort:
         options["reasoning_effort"] = reasoning_effort
+    if mcp_servers is not None:
+        options["mcp_servers"] = list(mcp_servers)
+    if mcp_tools is not None:
+        options["mcp_tools"] = list(mcp_tools)
     return options
 
 
